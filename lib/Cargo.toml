@@ -1,0 +1,24 @@
+[package]
+name = "blindhop-lib"
+description = "Sphinx/Loopix mixnet cryptographic primitives for BlindHop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes = "0.8"
+ctr = "0.9"
+blake3 = "1"
+rand = "0.8"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive"] }
+cipher = "0.4"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "sphinx"
+harness = false

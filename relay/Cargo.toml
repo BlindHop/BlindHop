@@ -1,0 +1,17 @@
+[package]
+name = "blindhop-relay"
+description = "BlindHop Sphinx relay node — WebSocket-based mixnet relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blindhop-lib.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+futures-util.workspace = true

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlindHop MVP Demo</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🕵️ BlindHop <span class="tag">MVP</span></h1>
+            <p class="subtitle">Mixnet Privacy Layer for Smoldot Light Clients</p>
+        </header>
+
+        <div class="mode-toggle">
+            <button id="btn-native" class="toggle-btn active" onclick="setMode('native')">
+                <span class="dot red"></span> Native Smoldot
+            </button>
+            <button id="btn-blindhop" class="toggle-btn" onclick="setMode('blindhop')">
+                <span class="dot green"></span> BlindHop (3 hops)
+            </button>
+            <button id="btn-both" class="toggle-btn" onclick="setMode('both')">
+                <span class="dot blue"></span> Side-by-Side
+            </button>
+        </div>
+
+        <div class="panels" id="panels">
+            <!-- Native panel -->
+            <div class="panel" id="panel-native">
+                <div class="panel-header">
+                    <h2><span class="dot red"></span> Native Smoldot</h2>
+                    <span class="badge badge-warn">IP Exposed</span>
+                </div>
+                <div class="panel-body">
+                    <div class="stat-row">
+                        <span class="label">Connection</span>
+                        <span class="value" id="native-connection">Direct WebSocket</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Target RPC</span>
+                        <code class="value mono" id="native-target">wss://sys.turboflakes.io/asset-hub-paseo</code>
+                    </div>
+                    <div class="stat-row highlight-bad">
+                        <span class="label">Full node sees</span>
+                        <span class="value" id="native-ip">YOUR IP ADDRESS</span>
+                    </div>
+                    <hr>
+                    <div class="stat-row">
+                        <span class="label">Chain</span>
+                        <span class="value" id="native-chain">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Latest Block</span>
+                        <span class="value" id="native-block">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Latency (p50)</span>
+                        <span class="value" id="native-latency">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Requests</span>
+                        <span class="value" id="native-requests">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BlindHop panel -->
+            <div class="panel" id="panel-blindhop" style="display:none;">
+                <div class="panel-header">
+                    <h2><span class="dot green"></span> BlindHop Mode</h2>
+                    <span class="badge badge-ok">IP Hidden</span>
+                </div>
+                <div class="panel-body">
+                    <div class="stat-row">
+                        <span class="label">Connection</span>
+                        <span class="value" id="bh-connection">3-hop Sphinx relay</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Relay Path</span>
+                        <code class="value mono" id="bh-relay-path">ws://127.0.0.1:9401 → :9402 → :9403</code>
+                    </div>
+                    <div class="stat-row highlight-good">
+                        <span class="label">Full node sees</span>
+                        <span class="value" id="bh-ip">EXIT RELAY IP</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Packet size</span>
+                        <span class="value">2,048 bytes (fixed)</span>
+                    </div>
+                    <hr>
+                    <div class="stat-row">
+                        <span class="label">Chain</span>
+                        <span class="value" id="bh-chain">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Latest Block</span>
+                        <span class="value" id="bh-block">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Latency (p50)</span>
+                        <span class="value" id="bh-latency">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Requests</span>
+                        <span class="value" id="bh-requests">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Overhead bar -->
+        <div class="overhead-bar" id="overhead-bar" style="display:none;">
+            <div class="overhead-label">Overhead</div>
+            <div class="overhead-value" id="overhead-value">—</div>
+            <div class="overhead-detail" id="overhead-detail">Measuring...</div>
+        </div>
+
+        <!-- Latency history chart -->
+        <div class="chart-container" id="chart-container" style="display:none;">
+            <h3>Latency History (ms)</h3>
+            <canvas id="latency-chart" width="800" height="200"></canvas>
+            <div class="chart-legend">
+                <span><span class="dot red"></span> Native</span>
+                <span><span class="dot green"></span> BlindHop</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button id="btn-start" class="btn-primary" onclick="startQuerying()">
+                ▶ Start Querying
+            </button>
+            <button id="btn-stop" class="btn-secondary" onclick="stopQuerying()" disabled>
+                ⏹ Stop
+            </button>
+            <div class="control-info">
+                <label>
+                    Query interval:
+                    <select id="interval-select" onchange="updateInterval()">
+                        <option value="2000">2s</option>
+                        <option value="5000" selected>5s</option>
+                        <option value="10000">10s</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+
+        <footer>
+            <p>
+                <a href="https://wiki.blindhop.wtf" target="_blank">Documentation</a> ·
+                <a href="https://blindhop.wtf" target="_blank">Website</a> ·
+                BlindHop — Mixnet Privacy for Smoldot
+            </p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

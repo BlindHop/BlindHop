@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Key files (don't commit secrets)
+*.key
+*.pub
+
+# Node
+node_modules/
+
+# Docusaurus
+docs/node_modules/
+docs/build/
+docs/.docusaurus/
