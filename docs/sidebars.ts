@@ -17,6 +17,16 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Guides',
+      collapsed: false,
+      items: [
+        'guides/native-proxy',
+        'guides/browser-proxy',
+        'guides/smoldot-integration',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Mixnet Protocol',
       items: [
         'protocol/sphinx',
@@ -28,45 +38,9 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Zero-Knowledge Proofs',
-      items: [
-        'zk/stwo-overview',
-        'zk/relay-proof',
-        'zk/eligibility-proof',
-        'zk/tx-validity-proof',
-        'zk/cover-compliance-proof',
-        'zk/binary-proof-tree',
-        'zk/dual-hash-strategy',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Smart Contracts (PolkaVM)',
-      items: [
-        'contracts/registry',
-        'contracts/verifier',
-        'contracts/revm-adapter',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Mixnode Operators',
+      label: 'Operators',
       items: [
         'operators/overview',
-        'operators/validator-mixnodes',
-        'operators/standalone-operators',
-        'operators/threshold-engine',
-        'operators/slashing',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'API Reference',
-      items: [
-        'api/builder',
-        'api/handle',
-        'api/config',
-        'api/javascript',
       ],
     },
     {
@@ -74,17 +48,6 @@ const sidebars: SidebarsConfig = {
       label: 'Security',
       items: [
         'security/threat-model',
-        'security/traffic-analysis',
-        'security/trustless-guarantees',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Performance',
-      items: [
-        'performance/benchmarks',
-        'performance/latency-analysis',
-        'performance/optimization',
       ],
     },
     'comparison',

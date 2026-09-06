@@ -10,16 +10,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -36,26 +37,18 @@ jobs:
         run: cargo test --workspace
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings 2>/dev/null || true
+        run: cargo clippy --workspace -- -D warnings
 
-  bench:
+  format:
+    name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          components: rustfmt
 
-      - name: Run benchmarks
-        run: cargo bench -p blindhop-lib -- --output-format bencher 2>/dev/null || cargo bench -p blindhop-lib
+      - name: Check formatting
+        run: cargo fmt --workspace -- --check

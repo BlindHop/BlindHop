@@ -7,47 +7,52 @@ title: Comparison
 
 ## Feature Matrix
 
-| Feature | BlindHop | Tor | Nym | Substrate Mixnet Spec | Integritee |
+| Feature | BlindHop (Nym) | Tor | Nym (standalone) | Substrate Mixnet Spec | Integritee |
 |---|---|---|---|---|---|
 | **Target** | Light clients | General | General | Full nodes | Sidechains |
-| **Architecture** | Sphinx/Loopix mixnet | Onion routing | Sphinx/Loopix | Sphinx mixing | TEE enclaves |
-| **Integration** | PlatformRef wrapper | SOCKS proxy | SDK | Native runtime | Sidechain bridge |
-| **ZK Proofs** | ✅ Stwo Circle STARKs | ❌ | ❌ | ❌ | ❌ |
+| **Architecture** | Nym mixnet proxy | Onion routing | Sphinx/Loopix | Sphinx mixing | TEE enclaves |
+| **Integration** | WS proxy + exit SP | SOCKS proxy | SDK | Native runtime | Sidechain bridge |
+| **Anonymity set** | 500+ mix nodes | ~6000 relays | 500+ mix nodes | Chain validators | TEE operators |
+| **Cover Traffic** | ✅ Loopix (via Nym) | ❌ | ✅ Loopix | ✅ | N/A |
+| **Timing Resistance** | ✅ Poisson delays | ⚠️ Limited | ✅ Poisson delays | ✅ | N/A |
+| **Browser Support** | ✅ (via proxy) | ⚠️ Bridge | ⚠️ Bridge | ❌ | ❌ |
+| **Privacy Slider** | ✅ None/Fast/Full | ❌ | ❌ | ❌ | ❌ |
+| **Substrate-native** | ✅ JSON-RPC aware | ❌ | ❌ | ✅ | ✅ |
 | **Trusted Setup** | ❌ None | N/A | N/A | N/A | ✅ Intel SGX |
-| **Post-Quantum** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Cover Traffic** | ✅ Loopix | ❌ | ✅ Loopix | ✅ | N/A |
-| **Timing Resistance** | ✅ Exp delays | ⚠️ Limited | ✅ Exp delays | ✅ | N/A |
-| **On-chain Verification** | ✅ PolkaVM | N/A | ✅ Cosmos | ❌ | ✅ (TEE) |
-| **Browser Support** | ✅ Wasm | ⚠️ Bridge | ⚠️ Bridge | ❌ | ❌ |
-| **Operator Model** | Validator + standalone | Volunteer | Staked | Validators | TEE operators |
-| **Slashing** | ✅ ZK fraud proofs | ❌ | ✅ Economic | ❌ | ❌ |
 
 ## Detailed Comparisons
 
-### vs. Tor
+### vs. Using Tor
 
-Tor uses **circuit-based onion routing** without mixing or delays. This means:
+Tor uses **circuit-based onion routing** without mixing or delays:
 - Packets traverse in sequence through a fixed circuit (no reordering)
 - No cover traffic (idle users are distinguishable from active users)
 - Known vulnerable to traffic correlation by a global passive adversary
 
-BlindHop's Loopix mixing with exponential delays provides **stronger anonymity** at the cost of higher latency.
+BlindHop's Nym integration provides **Loopix mixing with Poisson delays** — stronger anonymity at the cost of higher latency.
 
-### vs. Nym Mixnet
+### vs. Nym Directly
 
-Nym is a general-purpose mixnet. Key differences:
-- Nym is an external network (not integrated with Substrate)
-- Using Nym requires a bridge/proxy (not native to smoldot)
-- Nym uses its own token (NYM) for staking, not KSM/DOT
-- Nym does not provide ZK proofs of correct relay
-
-BlindHop is **natively integrated** into the Substrate ecosystem and provides **cryptographic proof** of correct behavior.
+Using the Nym SDK directly for Substrate access requires building your own exit service and JSON-RPC handling. BlindHop provides:
+- **Ready-made exit service** (`blindhop-exit`) that understands JSON-RPC
+- **Privacy slider** for runtime mode switching
+- **MixnetTransport trait** for future pluggable backends
+- **Substrate-aware metrics** and monitoring
 
 ### vs. Substrate Mixnet Specification
 
-The [Substrate Mixnet Spec](https://spec.polkadot.network/#sect-mixnet) defines mixing at the **full node level**. Key differences:
+The [Substrate Mixnet Spec](https://spec.polkadot.network/#sect-mixnet) defines mixing at the **full node level**:
 - Designed for full nodes, not light clients
-- No ZK proofs of correct relay
 - Requires runtime changes (pallet integration)
+- No production deployment yet
 
-BlindHop extends the spec's concepts to **light clients** and adds **trustless ZK verification**.
+BlindHop works with **existing Substrate chains** — no runtime modifications needed.
+
+### vs. Integritee
+
+Integritee uses **Trusted Execution Environments** (Intel SGX):
+- Requires specific hardware (Intel SGX)
+- Trust assumption: Intel's hardware security
+- No network-level privacy (TEEs protect computation, not traffic patterns)
+
+BlindHop provides **network-level** metadata privacy with no hardware trust assumptions.

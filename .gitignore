@@ -23,3 +23,10 @@ node_modules/
 docs/node_modules/
 docs/build/
 docs/.docusaurus/
+
+# Nym runtime
+.exit_nym_address
+.nym/
+
+# Demo build output
+demo/dist/

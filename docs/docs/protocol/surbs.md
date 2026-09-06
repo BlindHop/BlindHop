@@ -1,106 +1,42 @@
 ---
-sidebar_position: 3
-title: SURBs (Reply Blocks)
+sidebar_position: 4
+title: SURBs (Anonymous Replies)
+description: How Single-Use Reply Blocks enable anonymous responses
 ---
 
 # SURBs — Single-Use Reply Blocks
 
-SURBs enable **anonymous responses** — the exit node can send a reply to the client without knowing the client's identity or IP address.
+SURBs are a key component of the Sphinx packet format that enable **anonymous replies**. They allow the exit service to respond to requests without knowing the sender's identity.
 
 ## How SURBs Work
 
-A SURB is a **pre-built Sphinx header** for the return path, created by the client and attached to the outgoing packet.
+1. When `blindhop-proxy` sends a request through the Nym mixnet, the SDK automatically attaches SURBs
+2. Each SURB contains pre-encrypted routing information for the return path
+3. The exit service uses `client.send_reply(sender_tag, response)` to send a reply via the SURB
+4. The reply traverses the mixnet back to the sender through the pre-built path
+5. Only the original sender can decrypt the reply
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Exit
-    participant Hops as Return Hops
+## SURB Properties
 
-    Note over Client: CLIENT CREATES SURB
-    Client->>Client: Select return route (Exit → Hop_R1 → ... → Client)
-    Client->>Client: Pre-compute all shared secrets for return path
-    Client->>Client: Build Sphinx header for return path
-    Client->>Client: Attach SURB to outgoing packet
+| Property | Description |
+|----------|-------------|
+| **Single-use** | Each SURB can only be used once (prevents replay) |
+| **Anonymous** | The exit service never learns the sender's identity |
+| **Pre-built** | Return path is constructed by the sender, not the replier |
+| **Encrypted** | Each hop's routing info is encrypted for that specific node |
 
-    Note over Exit,Hops: EXIT USES SURB
-    Exit->>Exit: Receive response from chain RPC
-    Exit->>Exit: Encrypt response with SURB's first-hop key
-    Exit->>Exit: Prepend SURB header to encrypted response
-    Exit->>Hops: Send SURB reply packet
+## In BlindHop
 
-    Note over Hops,Client: SURB REPLY TRAVERSAL
-    Hops->>Hops: Process like normal Sphinx (peel layers)
-    Hops->>Client: Final hop delivers to client
-    Client->>Client: Decrypt with pre-computed SURB key
-    Client->>Client: Extract response
-```
-
-## SURB Structure
+The `nym-sdk` handles SURB management automatically:
 
 ```rust
-pub struct Surb {
-    /// Pre-built Sphinx header for the return path
-    pub header: SphinxHeader,       // 512 bytes
+// Proxy side: SURBs are attached automatically by nym-sdk
+client.send_plain_message(exit_address, request_bytes).await?;
 
-    /// First-hop address (where the exit sends the reply)
-    pub first_hop: SocketAddr,      // 18 bytes
-
-    /// Symmetric key for the exit to encrypt the response
-    pub reply_key: [u8; 32],        // AES key
-
-    /// Nonce for the reply encryption
-    pub reply_nonce: [u8; 12],      // AES-CTR nonce
+// Exit side: reply via sender_tag (SURB)
+if let Some(tag) = received_message.sender_tag {
+    client.send_reply(tag, response_bytes).await?;
 }
 ```
 
-| Field | Size | Description |
-|---|---|---|
-| Header | 512 bytes | Pre-built routing header for return path |
-| First hop | 18 bytes | Address of the first mixnode on the return path |
-| Reply key | 32 bytes | AES-256 key for encrypting the response |
-| Reply nonce | 12 bytes | AES-CTR nonce |
-| **Total** | **~574 bytes** | Embedded in the outgoing Sphinx payload |
-
-## Security Properties
-
-| Property | Guarantee |
-|---|---|
-| **Sender anonymity** | Exit node doesn't know who the client is |
-| **Reply unlinkability** | SURB header is indistinguishable from forward traffic |
-| **Single-use** | Each SURB can only be used once (nonce uniqueness) |
-| **Forward secrecy** | SURB keys are ephemeral and discarded after use |
-
-## SURB Pool Management
-
-The client maintains a pool of pre-generated SURBs for efficiency:
-
-```rust
-pub struct SurbPool {
-    /// Ready-to-use SURBs
-    available: VecDeque<PreparedSurb>,
-
-    /// SURBs waiting for replies (mapped by identifier)
-    pending: HashMap<SurbId, SurbDecryptionKey>,
-
-    /// Maximum pool size
-    max_size: usize,  // default: 32
-
-    /// Auto-replenish when pool drops below threshold
-    replenish_threshold: usize,  // default: 8
-}
-```
-
-When the pool drops below the threshold, new SURBs are generated in the background using randomly selected return routes.
-
-## Handling Large Responses
-
-If a response exceeds the 1,504-byte payload capacity, the exit node fragments it across multiple SURB replies. The client must attach **multiple SURBs** to a single request when expecting large responses (e.g., storage queries with large values).
-
-```rust
-/// Number of SURBs to attach based on expected response size
-fn surbs_needed(expected_response_bytes: usize) -> usize {
-    let payload_per_surb = 1504 - 20; // minus fragment header
-    (expected_response_bytes + payload_per_surb - 1) / payload_per_surb
-}
-```
+The `sender_tag` is an `AnonymousSenderTag` that the exit service uses to route the reply back through the pre-built SURB path. The exit service never learns the proxy's Nym address or IP.

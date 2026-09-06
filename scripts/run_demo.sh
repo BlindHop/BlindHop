@@ -1,104 +1,108 @@
 #!/usr/bin/env bash
+# BlindHop v2 Demo — Start the proxy and serve the demo page
+#
+# Usage:
+#   ./scripts/run_demo.sh [--mode full|fast|none] [--exit-address <NYM_ADDRESS>]
+#
+# Prerequisites:
+#   - Rust toolchain
+#   - A running blindhop-exit instance (for Fast/Full modes)
+
 set -euo pipefail
 
-echo "=== BlindHop MVP Demo ==="
-echo ""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_DIR"
+# Defaults
+MODE="${1:-full}"
+EXIT_ADDRESS="${EXIT_ADDRESS:-}"
+TARGET_RPC="${TARGET_RPC:-wss://sys.turboflakes.io/asset-hub-paseo}"
+PROXY_PORT=9500
+DEMO_PORT=8080
 
-# Build in release mode
-echo "Building BlindHop..."
-cargo build --workspace --release 2>&1 | tail -3
-
-KEY_DIR="$PROJECT_DIR/target/demo-keys"
-mkdir -p "$KEY_DIR"
-
-# Generate relay keys (and store public keys)
-echo ""
-echo "Generating relay keys..."
-for i in 1 2 3; do
-    if [ ! -f "$KEY_DIR/relay${i}.key" ]; then
-        PUB=$(cargo run -p blindhop-relay --release -- generate-key --output "$KEY_DIR/relay${i}.key" 2>/dev/null | tail -1)
-        echo "$PUB" > "$KEY_DIR/relay${i}.pub"
-        echo "  Relay $i key generated (pubkey: ${PUB:0:16}...)"
-    else
-        echo "  Relay $i key exists (reusing)"
-    fi
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode) MODE="$2"; shift 2 ;;
+        --exit-address) EXIT_ADDRESS="$2"; shift 2 ;;
+        --target) TARGET_RPC="$2"; shift 2 ;;
+        *) shift ;;
+    esac
 done
 
-# Read public keys for proxy config
-RELAY1_PUB=$(cat "$KEY_DIR/relay1.pub")
-RELAY2_PUB=$(cat "$KEY_DIR/relay2.pub")
-RELAY3_PUB=$(cat "$KEY_DIR/relay3.pub")
-
-# Generate a dummy destination key (the exit relay handles forwarding)
-DEST_KEY="0000000000000000000000000000000000000000000000000000000000000000"
-
+echo "╔═══════════════════════════════════════════════════╗"
+echo "║        BlindHop v2 — Nym Mixnet Demo             ║"
+echo "╚═══════════════════════════════════════════════════╝"
 echo ""
-echo "Starting relay nodes..."
+echo "  Privacy Mode:  $MODE"
+echo "  Target RPC:    $TARGET_RPC"
+echo "  Proxy:         ws://127.0.0.1:$PROXY_PORT"
+echo "  Demo UI:       http://127.0.0.1:$DEMO_PORT"
+echo ""
 
-# Start 3 relay nodes
-cargo run -p blindhop-relay --release -- run \
-    --listen 0.0.0.0:9401 \
-    --secret-key-file "$KEY_DIR/relay1.key" \
-    --hop-index 0 &
-PID1=$!
-echo "  Relay 1 (hop 0): PID $PID1, port 9401"
+# Try to read exit address from file if not specified
+if [[ -z "$EXIT_ADDRESS" ]] && [[ -f "$ROOT_DIR/.exit_nym_address" ]]; then
+    EXIT_ADDRESS=$(cat "$ROOT_DIR/.exit_nym_address")
+    echo "  Exit address:  $EXIT_ADDRESS (from .exit_nym_address)"
+fi
 
-cargo run -p blindhop-relay --release -- run \
-    --listen 0.0.0.0:9402 \
-    --secret-key-file "$KEY_DIR/relay2.key" \
-    --hop-index 1 &
-PID2=$!
-echo "  Relay 2 (hop 1): PID $PID2, port 9402"
+# Build
+echo "→ Building workspace..."
+cd "$ROOT_DIR"
+cargo build --workspace 2>&1
 
-cargo run -p blindhop-relay --release -- run \
-    --listen 0.0.0.0:9403 \
-    --secret-key-file "$KEY_DIR/relay3.key" \
-    --hop-index 2 \
-    --target "wss://sys.turboflakes.io/asset-hub-paseo" &
-PID3=$!
-echo "  Relay 3 (exit, hop 2): PID $PID3, port 9403"
+# Start proxy
+echo ""
+echo "→ Starting BlindHop proxy..."
 
+PROXY_ARGS=(
+    --listen "127.0.0.1:$PROXY_PORT"
+    --target "$TARGET_RPC"
+    --privacy-mode "$MODE"
+)
+
+if [[ -n "$EXIT_ADDRESS" ]]; then
+    PROXY_ARGS+=(--exit-address "$EXIT_ADDRESS")
+fi
+
+cargo run -p blindhop-proxy -- "${PROXY_ARGS[@]}" &
+PROXY_PID=$!
+
+echo "  Proxy PID: $PROXY_PID"
 sleep 2
 
-# Start the proxy
+# Serve demo page
 echo ""
-echo "Starting BlindHop proxy..."
-cargo run -p blindhop-proxy --release -- \
-    --listen 127.0.0.1:9500 \
-    --relay-path "ws://127.0.0.1:9401,ws://127.0.0.1:9402,ws://127.0.0.1:9403" \
-    --relay-keys "$RELAY1_PUB,$RELAY2_PUB,$RELAY3_PUB" \
-    --target "wss://sys.turboflakes.io/asset-hub-paseo" \
-    --target-key "$DEST_KEY" &
-PID4=$!
-echo "  Proxy: PID $PID4, port 9500"
+echo "→ Serving demo UI on http://127.0.0.1:$DEMO_PORT"
+cd "$ROOT_DIR/demo"
 
-sleep 1
+# Use Python's built-in HTTP server
+if command -v python3 &> /dev/null; then
+    python3 -m http.server $DEMO_PORT &
+    DEMO_PID=$!
+elif command -v npx &> /dev/null; then
+    npx -y serve -l $DEMO_PORT . &
+    DEMO_PID=$!
+else
+    echo "⚠ No HTTP server found. Open demo/index.html manually."
+    DEMO_PID=""
+fi
 
 echo ""
-echo "Starting demo web server..."
-echo "============================================"
-echo "  Open http://localhost:8080 in your browser"
-echo "============================================"
-echo ""
-echo "Press Ctrl+C to stop all processes."
-
-# Serve the demo page
-python3 -m http.server 8080 -d "$PROJECT_DIR/demo/" &
-PID5=$!
+echo "╔═══════════════════════════════════════════════════╗"
+echo "║  Demo running! Open http://127.0.0.1:$DEMO_PORT       ║"
+echo "║  Press Ctrl+C to stop                            ║"
+echo "╚═══════════════════════════════════════════════════╝"
 
 # Cleanup on exit
 cleanup() {
     echo ""
-    echo "Shutting down..."
-    kill $PID1 $PID2 $PID3 $PID4 $PID5 2>/dev/null || true
-    wait 2>/dev/null || true
-    echo "Done."
+    echo "→ Shutting down..."
+    [[ -n "${PROXY_PID:-}" ]] && kill "$PROXY_PID" 2>/dev/null || true
+    [[ -n "${DEMO_PID:-}" ]] && kill "$DEMO_PID" 2>/dev/null || true
+    echo "  Done."
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
-# Wait for any process to exit
+# Wait
 wait

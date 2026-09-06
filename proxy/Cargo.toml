@@ -1,19 +1,27 @@
 [package]
 name = "blindhop-proxy"
-description = "BlindHop local WebSocket proxy — bridges smoldot traffic through Sphinx relay path"
+description = "BlindHop local WebSocket proxy — routes smoldot traffic through the Nym mixnet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-blindhop-lib.workspace = true
+blindhop-common.workspace = true
+nym-sdk.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-rand.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "nym"
+harness = false

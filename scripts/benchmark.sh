@@ -1,34 +1,49 @@
 #!/usr/bin/env bash
+# BlindHop Benchmark Script — compares latency across privacy modes
 set -euo pipefail
 
-echo "=== BlindHop Benchmark Suite ==="
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+echo "╔═══════════════════════════════════════════════════╗"
+echo "║        BlindHop v2 — Latency Benchmark           ║"
+echo "╚═══════════════════════════════════════════════════╝"
 echo ""
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_DIR"
+TARGET="${TARGET_RPC:-wss://sys.turboflakes.io/asset-hub-paseo}"
+ITERATIONS="${ITERATIONS:-10}"
 
-echo "1. Running unit tests..."
-cargo test --workspace 2>&1 | tail -5
-echo ""
-
-echo "2. Running Criterion micro-benchmarks..."
-echo "   (Results saved to target/criterion/)"
-cargo bench -p blindhop-lib 2>&1 | grep -E "time:|Benchmarking"
+echo "Target:     $TARGET"
+echo "Iterations: $ITERATIONS"
 echo ""
 
-echo "3. Summary"
-echo "=========================================="
+# Build first
+cargo build --workspace --release 2>&1
+
+echo "────────────────────────────────────────────────────"
+echo "Mode: Direct (no privacy)"
+echo "────────────────────────────────────────────────────"
+echo "Querying $TARGET directly..."
+
+for i in $(seq 1 "$ITERATIONS"); do
+    START=$(date +%s%N)
+    # Use websocat or wscat if available, otherwise skip
+    if command -v websocat &> /dev/null; then
+        echo '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader"}' | \
+            websocat -n1 "$TARGET" > /dev/null 2>&1
+        END=$(date +%s%N)
+        ELAPSED=$(( (END - START) / 1000000 ))
+        echo "  Request $i: ${ELAPSED}ms"
+    else
+        echo "  websocat not found — install with: cargo install websocat"
+        break
+    fi
+done
+
 echo ""
-echo "Benchmark results are in: target/criterion/"
+echo "Note: For Nym modes (Fast/Full), start the proxy and exit service,"
+echo "then run the demo UI for interactive benchmarking."
 echo ""
-echo "Key metrics to look for:"
-echo "  - sphinx_create/1_hop:    Sphinx packet creation (1 hop)"
-echo "  - sphinx_create/3_hop:    Sphinx packet creation (3 hops)"
-echo "  - sphinx_process_relay:   Per-hop relay processing"
-echo "  - blake3_hkdf_derive:     Key derivation"
-echo "  - blake3_mac_512b:        MAC computation"
-echo "  - aes_ctr_encrypt_3layers_1kb: Payload encryption"
-echo ""
-echo "To view detailed HTML reports:"
-echo "  open target/criterion/report/index.html"
+echo "Commands:"
+echo "  cargo run -p blindhop-exit -- --target-rpc $TARGET"
+echo "  cargo run -p blindhop-proxy -- --privacy-mode full --exit-address <NYM_ADDR>"

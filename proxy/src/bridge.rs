@@ -1,95 +1,204 @@
-//! Bridge: intercepts WebSocket messages from smoldot, wraps in Sphinx packets,
-//! sends through the relay path, and returns responses.
+//! Bridge: accepts WebSocket connections from smoldot and routes traffic
+//! through the appropriate transport based on the privacy mode.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use anyhow::{Context, Result};
-use blindhop_lib::config::PACKET_SIZE;
-use blindhop_lib::sphinx::keys::NodeInfo;
-use blindhop_lib::sphinx::packet::{prefix_payload, SphinxPacket};
+use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio::net::TcpListener;
+use tokio::sync::RwLock;
+use tokio_tungstenite::tungstenite::Message;
 
-/// Relay path configuration.
-#[derive(Clone)]
-pub struct RelayPath {
-    /// Ordered list of relay nodes in the path.
-    pub nodes: Vec<NodeInfo>,
-    /// The target full node (exit relay forwards here).
-    pub target: NodeInfo,
-}
+use blindhop_common::config::{BlindHopConfig, PrivacyMode};
+use blindhop_common::metrics::MetricsCollector;
 
-/// Process a single JSON-RPC message through the relay path.
-///
-/// 1. Wrap the message in a Sphinx packet
-/// 2. Send to entry relay via WebSocket
-/// 3. Wait for reply (exit relay forwards to target, gets response, sends back)
-/// 4. Return the response
-pub async fn send_through_relay_path(
-    message: &[u8],
-    relay_path: &RelayPath,
-    entry_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-) -> Result<Vec<u8>> {
-    // Prefix payload with length
-    let prefixed = prefix_payload(message);
+use crate::mode::ActiveTransport;
+use crate::nym_transport::NymTransport;
 
-    // Create Sphinx packet
-    let (packet, _keys) = SphinxPacket::create(&prefixed, &relay_path.nodes, &relay_path.target)
-        .map_err(|e| anyhow::anyhow!("Failed to create Sphinx packet: {}", e))?;
+/// Run the proxy server, accepting smoldot connections and routing
+/// through the configured transport.
+pub async fn run_proxy(listener: TcpListener, config: BlindHopConfig) -> Result<()> {
+    let config = Arc::new(config);
+    let metrics = Arc::new(MetricsCollector::new(200));
 
-    let packet_bytes = packet.to_bytes();
-    assert_eq!(packet_bytes.len(), PACKET_SIZE);
+    // Initialize the transport based on privacy mode
+    let transport = ActiveTransport::new(&config).await?;
+    let transport = Arc::new(RwLock::new(transport));
 
-    // Send to entry relay
-    entry_ws
-        .send(Message::Binary(packet_bytes.to_vec().into()))
-        .await
-        .context("Failed to send Sphinx packet to entry relay")?;
-
-    // Wait for reply (skip Ping/Pong)
     loop {
-        match entry_ws.next().await {
-            Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
-            Some(Ok(Message::Text(text))) => return Ok(text.as_bytes().to_vec()),
-            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
-            Some(Ok(Message::Close(_))) => anyhow::bail!("Relay connection closed before reply"),
-            Some(Err(e)) => anyhow::bail!("Error reading reply from relay path: {}", e),
-            None => anyhow::bail!("Relay connection closed before reply"),
-        }
+        let (stream, peer_addr) = listener.accept().await?;
+        tracing::info!("Smoldot connected from {}", peer_addr);
+
+        let config = config.clone();
+        let transport = transport.clone();
+        let metrics = metrics.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, config, transport, metrics).await {
+                tracing::warn!("Connection from {} ended with error: {}", peer_addr, e);
+            }
+        });
     }
 }
 
-/// Connect to the entry relay.
-pub async fn connect_to_entry_relay(
-    entry_addr: &str,
-) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-    let (ws, _) = connect_async(entry_addr)
-        .await
-        .with_context(|| format!("Failed to connect to entry relay: {}", entry_addr))?;
-    Ok(ws)
-}
+/// Handle a single smoldot WebSocket connection.
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    config: Arc<BlindHopConfig>,
+    transport: Arc<RwLock<ActiveTransport>>,
+    metrics: Arc<MetricsCollector>,
+) -> Result<()> {
+    let ws = tokio_tungstenite::accept_async(stream).await?;
+    let (mut ws_tx, mut ws_rx) = ws.split();
 
-/// Direct mode: forward messages to target without Sphinx wrapping.
-/// Used for baseline comparison.
-pub async fn send_direct(
-    message: &[u8],
-    target_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-) -> Result<Vec<u8>> {
-    let text = String::from_utf8_lossy(message).to_string();
-    target_ws
-        .send(Message::Text(text.into()))
-        .await
-        .context("Failed to send direct message")?;
-
-    if let Some(msg) = target_ws.next().await {
-        let msg = msg.context("Error reading direct response")?;
+    while let Some(msg) = ws_rx.next().await {
         match msg {
-            Message::Text(t) => Ok(t.as_bytes().to_vec()),
-            Message::Binary(b) => Ok(b.to_vec()),
-            _ => Ok(Vec::new()),
+            Ok(Message::Text(text)) => {
+                let start = Instant::now();
+                let data = text.as_bytes();
+
+                // Check if this is a control message (privacy mode change)
+                if let Ok(control) = serde_json::from_slice::<ControlMessage>(data) {
+                    if control.method == "blindhop_setPrivacyMode" {
+                        handle_control_message(&control, &transport, &config).await;
+                        // Send acknowledgment
+                        let ack = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": control.id,
+                            "result": {
+                                "mode": format!("{}", config.privacy_mode),
+                                "status": "ok"
+                            }
+                        });
+                        let _ = ws_tx
+                            .send(Message::Text(ack.to_string().into()))
+                            .await;
+                        continue;
+                    }
+
+                    if control.method == "blindhop_getMetrics" {
+                        let guard = transport.read().await;
+                        let info = guard.privacy_info();
+                        let transport_metrics = guard.transport_metrics();
+                        let ack = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": control.id,
+                            "result": {
+                                "mode": format!("{}", info.mode),
+                                "hop_count": info.hop_count,
+                                "cover_traffic": info.cover_traffic_active,
+                                "gateway": info.gateway_address,
+                                "our_address": info.our_address,
+                                "latency_p50": transport_metrics.latency_p50_ms,
+                                "latency_p95": transport_metrics.latency_p95_ms,
+                                "messages_sent": transport_metrics.messages_sent,
+                                "messages_received": transport_metrics.messages_received,
+                            }
+                        });
+                        let _ = ws_tx
+                            .send(Message::Text(ack.to_string().into()))
+                            .await;
+                        continue;
+                    }
+                }
+
+                // Route through transport based on privacy mode
+                let reply = {
+                    let guard = transport.read().await;
+                    guard.send_and_recv(data).await
+                };
+
+                let elapsed = start.elapsed().as_millis() as f64;
+                metrics.record_latency(elapsed);
+
+                match reply {
+                    Ok(response) => {
+                        let reply_text = String::from_utf8_lossy(&response).to_string();
+                        tracing::debug!(
+                            "Response ({} bytes, {:.0}ms)",
+                            response.len(),
+                            elapsed
+                        );
+                        if let Err(e) = ws_tx
+                            .send(Message::Text(reply_text.into()))
+                            .await
+                        {
+                            tracing::warn!("Failed to send reply to smoldot: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Transport error: {}", e);
+                        // Send JSON-RPC error back to smoldot
+                        let error_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": null,
+                            "error": {
+                                "code": -32000,
+                                "message": format!("BlindHop transport error: {}", e)
+                            }
+                        });
+                        let _ = ws_tx
+                            .send(Message::Text(error_resp.to_string().into()))
+                            .await;
+                    }
+                }
+            }
+            Ok(Message::Binary(data)) => {
+                // Forward binary messages the same way
+                let guard = transport.read().await;
+                if let Ok(response) = guard.send_and_recv(&data).await {
+                    let _ = ws_tx.send(Message::Binary(response.into())).await;
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Ping(data)) => {
+                let _ = ws_tx.send(Message::Pong(data)).await;
+            }
+            Ok(_) => {} // Skip Pong and Frame messages
+            Err(e) => {
+                tracing::debug!("Client disconnected: {}", e);
+                break;
+            }
         }
-    } else {
-        anyhow::bail!("Direct connection closed before reply")
     }
+
+    Ok(())
+}
+
+/// Handle a BlindHop control message (e.g., privacy mode change).
+async fn handle_control_message(
+    control: &ControlMessage,
+    transport: &Arc<RwLock<ActiveTransport>>,
+    config: &BlindHopConfig,
+) {
+    if let Some(mode_str) = control.params.first().and_then(|v| v.as_str()) {
+        let new_mode = match mode_str {
+            "none" => PrivacyMode::None,
+            "fast" => PrivacyMode::Fast,
+            "full" => PrivacyMode::Full,
+            _ => {
+                tracing::warn!("Unknown privacy mode: {}", mode_str);
+                return;
+            }
+        };
+
+        tracing::info!("Privacy mode change requested: {}", new_mode.label());
+
+        let mut guard = transport.write().await;
+        if let Err(e) = guard.switch_mode(new_mode, config).await {
+            tracing::error!("Failed to switch privacy mode: {}", e);
+        }
+    }
+}
+
+/// Control message from the demo UI.
+#[derive(Debug, serde::Deserialize)]
+struct ControlMessage {
+    #[serde(default)]
+    id: Option<u64>,
+    method: String,
+    #[serde(default)]
+    params: Vec<serde_json::Value>,
 }

@@ -2,41 +2,33 @@
 slug: /
 sidebar_position: 1
 title: Introduction
-description: BlindHop — Mixnet privacy layer for Substrate light clients powered by Stwo Circle STARKs
+description: BlindHop — Mixnet privacy layer for Substrate light clients powered by the Nym network
 ---
 
 # BlindHop
 
 **Mixnet Privacy Layer for Smoldot Light Clients**
 
-BlindHop is a middleware crate that wraps the [smoldot](https://github.com/smol-dot/smoldot) light client, routing all traffic through a **Sphinx/Loopix mixnet** with **zero-knowledge proofs** powered by [Stwo Circle STARKs](https://github.com/starkware-libs/stwo). It provides:
+BlindHop is a middleware system that wraps the [smoldot](https://github.com/smol-dot/smoldot) light client, routing all traffic through the [Nym mixnet](https://nymtech.net) — a production network of 500+ mix nodes providing strong metadata privacy. It provides:
 
 - 🔒 **Transaction origin hiding** — extrinsic submissions are untraceable to the sender's IP
 - 🕵️ **Metadata privacy** — storage queries, block requests, and chain state reads are all anonymized
-- 🧮 **Trustless verification** — every mixnode proves correct relay via Stwo Circle STARKs
+- 🌐 **Production mixnet** — 500+ Nym mix nodes, battle-tested Sphinx packet format, Loopix cover traffic
+- ⚡ **Privacy slider** — users choose between None (direct), Fast (2-hop), and Full (5-hop mixnet)
+- 🔧 **Modular exit** — dedicated service provider or Nym SOCKS5 fallback
 - 🌐 **Chain-agnostic** — works with Kusama, Polkadot, parachains, and solochains
-- 🚫 **No trusted setup** — fully transparent ZK proofs (post-quantum secure)
-- ⚡ **No new pallets** — all on-chain logic runs on PolkaVM as Rust smart contracts
 
 ## Quick Start
 
 ```bash
-npm install @blindhop/client
-```
+# Build the workspace
+cargo build --workspace
 
-```typescript
-import { BlindHop } from '@blindhop/client';
+# Start exit service (on server)
+cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-paseo
 
-const client = await BlindHop.start({
-  chainSpec: kusamaChainSpec,
-  hopCount: 3,
-  privacyMode: 'required',
-});
-
-// Use exactly like smoldot — same JSON-RPC interface
-const response = await client.sendJsonRpc(
-  '{"jsonrpc":"2.0","id":1,"method":"author_submitExtrinsic","params":["0x..."]}'
-);
+# Start proxy (on user machine)
+cargo run -p blindhop-proxy -- --privacy-mode full --exit-address <NYM_ADDRESS>
 ```
 
 ## Why BlindHop?
@@ -49,38 +41,46 @@ BlindHop eliminates this metadata leakage at the network transport layer — mak
 
 ```mermaid
 graph TB
-    subgraph "Edge Layer"
-        A["dApp"] --> B["@blindhop/client"]
-        B --> C["MixnetPlatform"]
-        C --> D["smoldot-light"]
+    subgraph "User Layer"
+        A["dApp / smoldot"] --> B["blindhop-proxy"]
+        B --> C["Privacy Slider"]
     end
 
-    subgraph "Core Layer — Mixnet"
-        E["Entry"] --> F["Hop 1"]
-        F --> G["Hop 2"]
-        G --> H["Exit"]
+    subgraph "Nym Mixnet (500+ nodes)"
+        D["Gateway"] --> E["Mix Layer 1"]
+        E --> F["Mix Layer 2"]
+        F --> G["Mix Layer 3"]
+        G --> H["Gateway"]
     end
 
-    subgraph "Settlement Layer"
-        I["PolkaVM Registry"]
-        J["Stwo Verifier"]
-        K["Kademlia DHT"]
+    subgraph "Exit Layer"
+        I["blindhop-exit (Nym SP)"]
+        J["Substrate Full Node"]
     end
 
-    C -- "2 KB Sphinx" --> E
-    H -- "SURB Reply" --> C
-    H -- "Blake3 hash" --> I
-    I -- "verify" --> J
-    H -- "~35 KB proof" --> K
+    C -- "None: direct WS" --> J
+    C -- "Fast/Full: Sphinx packets" --> D
+    H --> I
+    I -- "JSON-RPC" --> J
+    I -- "SURB reply" --> H
 ```
 
 ## Design Principles
 
-1. **Performance-first** — Stwo's Mersenne31 field maps to 32-bit RISC-V registers; O(log N) proof aggregation via binary tree
-2. **Trustless at every stage** — no trusted setup, no trusted hardware, no trusted third parties
-3. **Non-invasive** — wraps smoldot's `PlatformRef` trait; no fork required
-4. **Chain-agnostic** — one implementation covers all Substrate chains
-5. **Progressive privacy** — configurable hop count (1–5), cover traffic rate, and privacy mode
+1. **Leverage existing infrastructure** — Nym's 500+ node mixnet provides a real anonymity set, unlike self-hosted relays
+2. **Performance-first** — privacy slider lets users trade latency for anonymity
+3. **Modular architecture** — `MixnetTransport` trait allows plugging in custom backends
+4. **Non-invasive** — local WebSocket proxy; no smoldot fork required
+5. **Chain-agnostic** — one implementation covers all Substrate chains
+6. **Progressive privacy** — configurable modes: None → Fast (2-hop) → Full (5-hop mixnet + cover traffic)
+
+## Privacy Modes
+
+| Mode | Hops | Cover Traffic | Latency Overhead | IP Hidden | Metadata Private |
+|------|------|--------------|------------------|-----------|-----------------|
+| **None** | 0 | ✗ | 0ms | ✗ | ✗ |
+| **Fast** | 2 | ✗ | ~200-500ms | ✓ | ✗ |
+| **Full** | 5 | ✓ (Loopix) | ~1-3s | ✓ | ✓ |
 
 ## License
 

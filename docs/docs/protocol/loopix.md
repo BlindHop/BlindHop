@@ -1,158 +1,85 @@
 ---
-sidebar_position: 2
-title: Loopix Mixing Strategy
+sidebar_position: 3
+title: Loopix Deep Dive
+description: Detailed Loopix protocol analysis for Nym-based mixing
 ---
 
-# Loopix Mixing Strategy
+# Loopix Deep Dive
 
-BlindHop implements the **Loopix** mixing strategy, which provides strong anonymity guarantees through three mechanisms: stratified topology, Poisson cover traffic, and exponential delays.
+The Nym mixnet implements the [Loopix](https://arxiv.org/abs/1703.00536) anonymous communication protocol. This page covers the protocol details relevant to BlindHop.
 
-## Stratified Cascade
+## Stratified Cascade Topology
 
-Mixnodes are organized into **L layers** (default: L = hop_count). Each client selects exactly one node per layer:
+Nym organizes mix nodes into **layers** forming a cascade:
 
 ```mermaid
 graph LR
-    subgraph "Clients"
-        C1["Client A"]
-        C2["Client B"]
-        C3["Client C"]
+    subgraph "Gateways (Entry)"
+        G1["Gateway A"]
+        G2["Gateway B"]
     end
-    subgraph "Layer 0"
-        N1["Node 1"]
-        N2["Node 2"]
-    end
+
     subgraph "Layer 1"
-        N3["Node 3"]
-        N4["Node 4"]
+        M1["Mix 1A"]
+        M2["Mix 1B"]
+        M3["Mix 1C"]
     end
+
     subgraph "Layer 2"
-        N5["Node 5"]
-        N6["Node 6"]
-    end
-    subgraph "Providers"
-        P1["Exit A"]
-        P2["Exit B"]
+        N1["Mix 2A"]
+        N2["Mix 2B"]
+        N3["Mix 2C"]
     end
 
-    C1 & C2 & C3 --> N1 & N2
-    N1 & N2 --> N3 & N4
-    N3 & N4 --> N5 & N6
-    N5 & N6 --> P1 & P2
+    subgraph "Layer 3"
+        O1["Mix 3A"]
+        O2["Mix 3B"]
+        O3["Mix 3C"]
+    end
+
+    subgraph "Gateways (Exit)"
+        H1["Gateway C"]
+        H2["Gateway D"]
+    end
+
+    G1 --> M1 & M2 & M3
+    G2 --> M1 & M2 & M3
+    M1 --> N1 & N2 & N3
+    M2 --> N1 & N2 & N3
+    M3 --> N1 & N2 & N3
+    N1 --> O1 & O2 & O3
+    N2 --> O1 & O2 & O3
+    N3 --> O1 & O2 & O3
+    O1 --> H1 & H2
+    O2 --> H1 & H2
+    O3 --> H1 & H2
 ```
 
-### Layer Assignment
+The client randomly selects **one node per layer**, constructing a path like `G1 → M2 → N1 → O3 → H2`.
 
-Mixnodes are assigned to layers using a deterministic function of their public key and the current session number:
+## Poisson Mixing
 
-```rust
-fn assign_layer(node_pubkey: &[u8; 32], session: u64, num_layers: u8) -> u8 {
-    let seed = blake3::hash(&[node_pubkey, &session.to_le_bytes()].concat());
-    (seed.as_bytes()[0] as u64 % num_layers as u64) as u8
-}
-```
+At each hop, mix nodes apply a **Poisson delay**:
 
-This ensures:
-- Balanced layer distribution
-- Deterministic assignment (all clients agree without communication)
-- Rotation across sessions (prevents long-term positional attacks)
+- Packets are reordered (prevents timing correlation)
+- The delay distribution is memoryless (observing one delay gives no information about future delays)
+- Combined with cover traffic, this makes traffic analysis infeasible
 
-## Exponential Delays
+## Security Properties
 
-Each mixnode delays packets by a duration sampled from an **exponential distribution**:
+| Property | Guarantee |
+|----------|-----------|
+| **Sender anonymity** | No entity knows both sender IP and message content |
+| **Receiver anonymity** | Exit service knows content but not sender |
+| **Unlinkability** | Cannot link input/output packets at any hop |
+| **Unobservability** | Real traffic is indistinguishable from cover traffic |
 
-$$
-\text{delay} \sim \text{Exp}(\mu) \quad \text{where } \mu \text{ is the rate parameter}
-$$
+## BlindHop's Use of Loopix
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| μ (rate) | 2.0 s⁻¹ | Mean delay = 1/μ = 500ms |
-| Min delay | 10 ms | Floor to prevent zero delays |
-| Max delay | 5,000 ms | Ceiling to prevent stale packets |
+BlindHop relies entirely on Nym's Loopix implementation. The `nym-sdk` manages:
+- Cover traffic generation and rate control
+- Mix node selection and route construction
+- Sphinx packet creation and SURB management
+- Gateway connection and message delivery
 
-### Why Exponential?
-
-The exponential distribution is **memoryless**: knowing how long a packet has waited gives no information about when it will be sent. This property is critical for preventing timing attacks.
-
-$$
-P(\text{delay} > t + s \mid \text{delay} > t) = P(\text{delay} > s)
-$$
-
-### Delay Seeding
-
-To make delays **sender-predictable** (the client can estimate round-trip time), the delay seed is embedded in the Sphinx routing header:
-
-```rust
-fn sample_delay(seed: &[u8; 16], mu: f64) -> Duration {
-    let mut rng = ChaCha20Rng::from_seed(expand_seed(seed));
-    let delay_ms = Exp::new(1.0 / mu).unwrap().sample(&mut rng);
-    Duration::from_millis(delay_ms.clamp(10.0, 5000.0) as u64)
-}
-```
-
-## Cover Traffic
-
-Cover traffic consists of **dummy packets** that are cryptographically indistinguishable from real packets. Three types exist:
-
-### 1. Client Cover (Loop Messages)
-
-Clients send cover packets that loop through the mixnet and return via SURB:
-
-```
-Client → Entry → Hop1 → ... → Exit → (SURB return) → Client
-```
-
-- Rate: λ_loop packets/second (configurable, default 0.5)
-- Purpose: Maintains constant traffic rate from the client
-- The client verifies the loop completed (liveness check for the mixnet)
-
-### 2. Mixnode Cover (Drop Messages)
-
-Each mixnode generates cover packets addressed to random mixnodes:
-
-```
-Mixnode_A → Hop1 → ... → Mixnode_B (drops the packet)
-```
-
-- Rate: λ_drop packets/second per mixnode
-- Purpose: Maintains constant traffic volume within the network
-- Dropped silently at the destination (no response needed)
-
-### 3. Mixnode Loop Cover
-
-Each mixnode generates self-addressed loop traffic:
-
-```
-Mixnode_A → Hop1 → ... → Mixnode_A (verifies loop)
-```
-
-- Rate: λ_loop_node packets/second
-- Purpose: Self-monitoring, liveness detection
-- Used for cover compliance proofs (ZK proof of traffic volume)
-
-## Traffic Model
-
-At steady state, each link in the network carries:
-
-$$
-\text{Total traffic} = \text{Real messages} + \text{Client loops} + \text{Node drops} + \text{Node loops}
-$$
-
-An observer sees a **constant Poisson stream** on each link, with rate:
-
-$$
-\lambda_{\text{total}} = \lambda_{\text{real}} + \lambda_{\text{cover}}
-$$
-
-Since all packets are exactly 2,048 bytes and delays are exponentially distributed, an observer cannot distinguish real from cover traffic by size, timing, or content.
-
-## Security Guarantees
-
-| Attack | Defense |
-|---|---|
-| **Traffic analysis** | Fixed 2 KB packets + Poisson cover = constant traffic profile |
-| **Timing correlation** | Exponential delays destroy timing patterns |
-| **Volume analysis** | Cover traffic maintains baseline regardless of real activity |
-| **Intersection attack** | Cover loops from clients prevent "goes silent" detection |
-| **Compulsion attack** | Mixnodes can't distinguish real from cover (drop analysis yields nothing) |
+BlindHop adds the **application layer** on top: JSON-RPC message wrapping, privacy mode switching, and Substrate-specific exit service logic.

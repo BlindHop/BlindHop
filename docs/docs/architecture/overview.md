@@ -1,97 +1,122 @@
 ---
 sidebar_position: 1
 title: Architecture Overview
-description: BlindHop's 3-tier architecture — Edge, Core, Settlement
+description: BlindHop's 2-tier architecture — Proxy + Nym Mixnet + Exit Service
 ---
 
 # Architecture Overview
 
-BlindHop uses a **3-tier architecture** that cleanly separates concerns between the light client, the decentralized mixnet, and on-chain settlement.
+BlindHop uses a **2-tier architecture** built on the Nym production mixnet, separating concerns between the local proxy and the exit service.
 
 ## System Diagram
 
 ```mermaid
 graph TB
-    subgraph "TIER 1 — Edge Layer"
-        A["dApp"] --> B["BlindHopBuilder API"]
-        B --> C["blindhop-wasm-node\n(@blindhop/client npm)"]
-        C --> D["blindhop-light-base\n(MixnetPlatform&lt;P&gt;)"]
-        D --> E["smoldot-light\n(PlatformRef wrapped)"]
+    subgraph "User Layer (Local)"
+        A["dApp / Browser"] --> B["smoldot light client"]
+        B --> C["blindhop-proxy"]
+        C --> D["Privacy Mode Switch"]
     end
 
-    subgraph "TIER 2 — Core Network Layer"
-        F["Entry Mixnode"] --> G["Hop 1"]
-        G --> H["Hop 2"]
-        H --> I["Hop N"]
-        I --> J["Exit Mixnode"]
-
-        G -- "Base Stwo Proof" --> K["Aggregator"]
-        H -- "Base Stwo Proof" --> K
-        K -- "Aggregated Proof" --> L["Root Aggregator"]
-        I -- "Base Stwo Proof" --> L
+    subgraph "Nym Mixnet (500+ nodes)"
+        E["Entry Gateway"] --> F["Mix Layer 1"]
+        F --> G["Mix Layer 2"]
+        G --> H["Mix Layer 3"]
+        H --> I["Exit Gateway"]
     end
 
-    subgraph "TIER 3 — Settlement Layer"
-        M["BlindHop Registry\n(PolkaVM)"]
-        N["Stwo Verifier\n(PolkaVM)"]
-        O["Kademlia DHT\n(~35 KB proofs)"]
+    subgraph "Exit Layer (Server)"
+        J["blindhop-exit (Nym SP)"]
+        K["Substrate Full Node"]
     end
 
-    D -- "2 KB Sphinx + SURBs" --> F
-    J -- "SURB Replies" --> D
-    L -- "~35 KB root proof" --> O
-    L -- "128-byte Blake3 hash" --> M
-    M -- "verify()" --> N
+    D -- "None: direct WS" --> K
+    D -- "Fast/Full: Nym SDK" --> E
+    I --> J
+    J -- "JSON-RPC forward" --> K
+    J -- "SURB reply" --> I
 ```
 
-## Tier 1: Edge Layer
+## User Layer
 
-The **Edge Layer** runs in the user's browser (or Node.js/Deno). It is responsible for:
-
-| Responsibility | Implementation |
-|---|---|
-| Wrapping smoldot | `MixnetPlatform<P: PlatformRef>` intercepts all connections |
-| Sphinx packet construction | x25519 key exchange → AES-CTR encryption → uniform 2 KB packets |
-| SURB management | Pre-built return headers attached to outgoing packets |
-| Cover traffic generation | Poisson-distributed dummy packets at rate λ |
-| TX validity proof | Client generates a minimal ZK proof of well-formed extrinsic (Wasm) |
-| Async proof retrieval | Pull-based fetching of ~35 KB root proofs from DHT |
-
-**Key constraint**: Everything must run in WebAssembly. No native dependencies. The Stwo verifier is compiled to Wasm for client-side root proof verification.
-
-## Tier 2: Core Network Layer
-
-The **Core Layer** is the decentralized mixnet — a set of mixnodes operated by validators and standalone operators.
+The **User Layer** runs on the user's machine (browser or CLI). It is responsible for:
 
 | Responsibility | Implementation |
 |---|---|
-| Sphinx relay | Decrypt one layer → apply exponential delay → forward |
-| Base proof generation | Each hop generates a Stwo Circle STARK relay proof |
-| Binary tree aggregation | Pairs of proofs aggregated recursively → single root proof |
-| Cover loop generation | Mixnodes generate self-looping cover traffic |
-| DHT proof storage | Store ~35 KB root proofs by Blake3 hash in Kademlia |
+| Accepting smoldot connections | `blindhop-proxy` listens on a local WebSocket |
+| Privacy mode selection | None (direct), Fast (2-hop), Full (5-hop) |
+| Nym client management | `NymTransport` wraps `nym-sdk` client |
+| Metrics collection | Real-time latency, message counts, overhead tracking |
+| Control protocol | `blindhop_setPrivacyMode`, `blindhop_getMetrics` |
 
-**Key design**: Proofs are generated **concurrently** by each hop and aggregated in a **binary tree** — giving O(log N) latency instead of O(N) sequential folding.
+**Key trait**: `MixnetTransport` — the pluggable backend interface defined in `blindhop-common`.
 
-## Tier 3: Settlement Layer
+```rust
+#[async_trait]
+pub trait MixnetTransport: Send + Sync {
+    async fn send(&self, data: &[u8]) -> Result<()>;
+    async fn recv(&self) -> Result<Vec<u8>>;
+    fn privacy_info(&self) -> PrivacyInfo;
+    fn metrics(&self) -> TransportMetrics;
+    async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()>;
+    fn is_connected(&self) -> bool;
+    async fn disconnect(&self) -> Result<()>;
+}
+```
 
-The **Settlement Layer** runs on-chain via PolkaVM smart contracts on Asset Hub.
+## Nym Mixnet Layer
+
+The **Nym Mixnet** is the core privacy infrastructure — a production network of 500+ mix nodes.
+
+| Feature | Details |
+|---|---|
+| Packet format | Sphinx (fixed-size, indistinguishable from cover traffic) |
+| Routing | 5-hop stratified cascade (Full mode) or 2-hop (Fast mode) |
+| Cover traffic | Loopix protocol — Poisson-distributed dummy packets |
+| Reply mechanism | SURBs (Single-Use Reply Blocks) for anonymous responses |
+| Network size | 500+ mix nodes across 3 layers + gateways |
+| Authentication | zk-nyms (Coconut credentials) for bandwidth allocation |
+
+**Key advantage over self-hosted relays**: Real anonymity set. With 500+ nodes and thousands of users, traffic analysis is infeasible.
+
+## Exit Layer
+
+The **Exit Layer** runs as a Nym Service Provider on a server with access to Substrate full nodes.
 
 | Responsibility | Implementation |
 |---|---|
-| Operator registry | Standalone registration, staking bonds, mixnode enumeration |
-| Proof verification | Stwo M31 sumcheck verifier (Rust `no_std` → RISC-V PVM) |
-| Eligibility checkpoints | Periodic on-chain proof submission for dispute resolution |
-| Slashing | Fraud proof verification → bond confiscation |
-| rEVM adapter | Solidity ABI translation for MetaMask/EVM wallet compatibility |
+| Receive mixnet traffic | Nym SP message loop |
+| Parse MixnetMessage envelopes | Extract JSON-RPC payload |
+| Forward to Substrate | WebSocket client to full node |
+| Return responses | SURB reply through the mixnet |
 
-**Key constraint**: Zero new pallets. All logic deploys as `pallet-revive` smart contracts.
+**Key trait**: `ExitBackend` — pluggable RPC forwarding backend.
+
+```rust
+#[async_trait]
+pub trait ExitBackend: Send + Sync {
+    async fn forward_rpc(&self, request: &[u8]) -> Result<Vec<u8>>;
+    fn backend_type(&self) -> &str;
+}
+```
 
 ## Data Flow Summary
 
-1. **User submits tx** → wrapped in 2 KB Sphinx packet with SURB
-2. **Packet traverses mixnet** → each hop decrypts, delays, forwards, generates base proof
-3. **Aggregators build proof tree** → O(log N) recursive composition → ~35 KB root proof
-4. **Root proof stored in DHT** → Blake3 hash committed on-chain (128 bytes)
-5. **Exit node delivers tx** → to full node RPC → blockchain processes it
-6. **Response returns via SURB** → anonymous return path → user receives result
+1. **User submits JSON-RPC** → smoldot sends to `blindhop-proxy`
+2. **Proxy wraps in MixnetMessage** → sends through Nym SDK to exit service
+3. **5-hop Sphinx traversal** → each mix node decrypts one layer, adds delay, forwards
+4. **Exit service receives** → parses payload, forwards JSON-RPC to Substrate full node
+5. **Full node responds** → exit wraps response in SURB reply
+6. **Reply traverses mixnet** → anonymous return path via pre-built SURBs
+7. **Proxy receives response** → forwards to smoldot → user gets result
+
+## Privacy Guarantees by Mode
+
+| Property | None | Fast | Full |
+|----------|------|------|------|
+| IP hidden from full node | ✗ | ✓ | ✓ |
+| Traffic timing hidden | ✗ | ✗ | ✓ |
+| Cover traffic active | ✗ | ✗ | ✓ |
+| Packet uniformity | ✗ | ✓ | ✓ |
+| SURB replies | ✗ | ✓ | ✓ |
+| Anonymity set | 0 | ~100 | ~500+ |

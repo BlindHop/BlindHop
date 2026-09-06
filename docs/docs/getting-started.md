@@ -1,134 +1,140 @@
 ---
 sidebar_position: 2
 title: Getting Started
-description: Install and configure BlindHop for browser-based or Node.js dApps
+description: Install and run BlindHop with the Nym mixnet for private Substrate light client access
 ---
 
 # Getting Started
 
-This guide walks you through integrating BlindHop into a dApp in under 5 minutes.
+This guide walks you through running BlindHop to privately query a Substrate chain.
 
 ## Prerequisites
 
-- **Node.js** ≥ 18 or modern browser with WebAssembly support
-- A chain specification JSON (e.g., Kusama, Polkadot, or your parachain)
+- **Rust** (stable, edition 2024)
+- A Substrate full node or public RPC endpoint
 
-## Installation
+## Build
 
 ```bash
-npm install @blindhop/client
+git clone https://github.com/aspect-build/BlindHop.git
+cd BlindHop
+cargo build --workspace
 ```
 
-## Browser Usage
+## Architecture Overview
 
-```typescript
-import { BlindHop } from '@blindhop/client';
+BlindHop runs as two services:
 
-// Fetch your chain specification
-const chainSpec = await fetch('/kusama.json').then(r => r.text());
+1. **`blindhop-proxy`** — runs on the user's machine, accepts WebSocket connections from smoldot, and routes traffic through the Nym mixnet
+2. **`blindhop-exit`** — runs on a server, receives mixnet traffic and forwards JSON-RPC requests to a Substrate full node
 
-// Start BlindHop — wraps smoldot with mixnet privacy
-const client = await BlindHop.start({
-  chainSpec,
-  hopCount: 3,                   // 1–5 hops through the mixnet
-  privacyMode: 'required',       // 'required' | 'best-effort'
-  coverTrafficRate: 1.0,         // λ = 1 cover packet/sec
-  delayParameter: 500.0,         // μ = 500ms mean delay per hop
-  minAnonymitySet: 30,           // minimum mixnodes required
-});
-
-// Use the same JSON-RPC interface as smoldot
-const blockHash = await client.sendJsonRpc(
-  '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[]}'
-);
-
-// Submit a transaction anonymously
-const txResult = await client.sendJsonRpc(
-  '{"jsonrpc":"2.0","id":2,"method":"author_submitExtrinsic","params":["0x..."]}'
-);
+```
+smoldot → blindhop-proxy → Nym Mixnet → blindhop-exit → Substrate Full Node
 ```
 
-## Node.js Usage
+## Step 1: Start the Exit Service
 
-```typescript
-import { BlindHop } from '@blindhop/client';
-import { readFileSync } from 'fs';
+On a server with access to a Substrate full node:
 
-const chainSpec = readFileSync('./kusama.json', 'utf-8');
+```bash
+cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-paseo
+```
 
-const client = await BlindHop.start({
-  chainSpec,
-  hopCount: 3,
-  privacyMode: 'required',
-});
+This will:
+- Connect to the Nym mixnet as a Service Provider
+- Print the exit service's Nym address (save this!)
+- Write the address to `.exit_nym_address`
 
-// Everything else is identical to browser usage
+## Step 2: Start the Proxy
+
+On the user's machine:
+
+```bash
+cargo run -p blindhop-proxy -- \
+  --listen 127.0.0.1:9500 \
+  --target wss://sys.turboflakes.io/asset-hub-paseo \
+  --privacy-mode full \
+  --exit-address <NYM_ADDRESS_FROM_STEP_1>
+```
+
+The proxy will:
+- Listen for WebSocket connections on `ws://127.0.0.1:9500`
+- Route traffic through the Nym mixnet (Full mode: 5-hop)
+- Support runtime mode switching
+
+## Step 3: Connect Your Client
+
+Point smoldot (or any WebSocket JSON-RPC client) at the proxy:
+
+```javascript
+const ws = new WebSocket('ws://127.0.0.1:9500');
+
+// Send standard JSON-RPC requests
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'chain_getHeader',
+  params: [],
+}));
 ```
 
 ## Runtime Privacy Controls
 
-Once the client is running, you can dynamically adjust privacy parameters:
+Switch privacy modes at runtime by sending a control message:
 
-```typescript
-// Increase hops for higher privacy
-client.setHopCount(5);
+```javascript
+// Switch to Fast mode (2-hop, lower latency)
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 99,
+  method: 'blindhop_setPrivacyMode',
+  params: ['fast'],
+}));
 
-// Adjust cover traffic bandwidth
-client.setCoverRate(2.0); // 2 packets/sec
-
-// Check current privacy status
-const metrics = client.anonymityMetrics();
-console.log(`Active mixnodes: ${metrics.totalMixnodes}`);
-console.log(`Validator mixnodes: ${metrics.validatorMixnodes}`);
-console.log(`Standalone mixnodes: ${metrics.standaloneMixnodes}`);
-console.log(`Privacy status: ${metrics.status}`);
-// → 'active' | 'degraded' | 'fallback'
-
-// Get latest proof status
-const proof = client.proofStatus();
-console.log(`Latest root proof: ${proof.rootHash}`);
-console.log(`Verified: ${proof.verified}`);
+// Get current metrics
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 100,
+  method: 'blindhop_getMetrics',
+  params: [],
+}));
 ```
 
-## Privacy Modes
+## Interactive Demo
 
-| Mode | Behavior |
-|---|---|
-| `required` | Refuse to operate if the mixnet is unavailable or below threshold. All traffic goes through the mixnet or not at all. |
-| `best-effort` | Fall back to direct smoldot connection with a warning if the mixnet is degraded. Emits a `privacy-degraded` event. |
+BlindHop ships with an interactive demo page with a privacy slider:
+
+```bash
+./scripts/run_demo.sh --mode full --exit-address <NYM_ADDRESS>
+# Open http://localhost:8080
+```
+
+The demo provides:
+- **Privacy slider** — drag between None, Fast, and Full modes
+- **Live latency metrics** — p50/p95 latency, overhead vs direct
+- **Real-time chart** — color-coded latency history per mode
+- **Chain data** — live block numbers from the connected chain
 
 ## Configuration Reference
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `chainSpec` | `string` | *(required)* | Chain specification JSON |
-| `hopCount` | `number` | `3` | Number of mixnet hops (1–5) |
-| `privacyMode` | `string` | `'required'` | Privacy failure policy |
-| `coverTrafficRate` | `number` | `1.0` | Cover traffic rate (packets/sec) |
-| `delayParameter` | `number` | `500.0` | Mean delay per hop (ms) |
-| `minAnonymitySet` | `number` | `30` | Minimum mixnodes required |
+### Proxy CLI
 
-## Interactive Demo Page
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--listen` | `127.0.0.1:9500` | WebSocket listen address |
+| `--target` | *(required)* | Substrate RPC endpoint URL |
+| `--privacy-mode` | `full` | Initial privacy mode: `none`, `fast`, `full` |
+| `--exit-address` | *(required for fast/full)* | Nym address of the exit service |
 
-BlindHop ships with an interactive `demo.html` page for testing and visualization:
+### Exit CLI
 
-```bash
-cd wasm-node && npm run dev
-# Open http://localhost:8080/demo.html
-```
-
-The demo page provides:
-- **Live mixnet status** — connected mixnodes, active layers, privacy status
-- **Transaction submission** — send a test extrinsic through the mixnet
-- **Anonymity metrics** — real-time pool composition, anonymity set size
-- **Cover traffic indicators** — visualize Poisson-distributed cover packets
-- **Proof verification** — view latest root proof hash and verification state
-- **Hop count control** — dynamically adjust hops (1–5) and observe latency changes
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target-rpc` | *(required)* | Substrate full node RPC URL |
 
 ## Next Steps
 
-- **[Architecture Overview](/architecture/overview)** — understand the 3-tier system
-- **[Sphinx Protocol](/protocol/sphinx)** — learn how packets are encrypted
-- **[ZK Proofs](/zk/stwo-overview)** — understand the Stwo Circle STARK system
-- **[Run a Mixnode](/operators/overview)** — become a mixnet operator
-- **[Testing Guide](/testing)** — run automated tests and local testnet verification
+- **[Architecture Overview](/architecture/overview)** — understand the system design
+- **[Crate Structure](/architecture/crate-structure)** — explore the workspace layout
+- **[Testing Guide](/testing)** — run the test suite
+- **[FAQ](/faq)** — common questions answered

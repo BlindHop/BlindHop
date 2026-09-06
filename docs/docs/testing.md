@@ -10,116 +10,120 @@ title: Testing & Verification
 ### Unit Tests
 
 ```bash
-# Sphinx round-trips, SURB encode/decode, fragmentation, delay sampling
-cargo test -p blindhop-lib
+# Shared types, config, metrics, RPC message round-trips (14 tests)
+cargo test -p blindhop-common
 
-# PlatformRef wrapper, session tracking, threshold engine
-cargo test -p blindhop-light-base
-
-# Stwo circuit constraint satisfaction, proof generation/verification
-cargo test -p blindhop-zk
-
-# Relay engine, delay queue, aggregation, DHT
-cargo test -p blindhop-full-node
-
-# Contract unit tests (pallet-revive test harness)
-cargo test -p blindhop-contracts
-
-# Wasm compilation + browser test
-wasm-pack test --headless --chrome blindhop-wasm-node
+# All workspace crates
+cargo test --workspace
 ```
 
-### Integration Tests
+### Current Test Coverage
+
+| Crate | Tests | Coverage |
+|---|---|---|
+| `blindhop-common` | 14 | Config defaults, privacy mode serde, metrics percentiles, JSON-RPC round-trips, MixnetMessage encode/decode |
+| `blindhop-proxy` | — | Compilation verified, integration tests planned |
+| `blindhop-exit` | — | Compilation verified, integration tests planned |
+
+### Integration Tests (Planned)
 
 ```bash
-# Full end-to-end: browser → mixnet → on-chain
-cargo test -p blindhop-integration --features local-testnet
+# Requires Nym mainnet connectivity
+BLINDHOP_NYM_INTEGRATION=1 cargo test --workspace -- --ignored
 ```
 
-Integration test files:
+Integration test plans:
 
-| Test File | Coverage |
+| Test | Coverage |
 |---|---|
-| `sphinx_roundtrip.rs` | Packet encode → multi-hop decrypt → payload recovery |
-| `mixnet_e2e.rs` | Full mixnet path: entry → N hops → exit → response via SURB |
-| `zk_circuits.rs` | All 4 circuits: relay, eligibility, tx validity, cover compliance |
-| `binary_tree_aggregation.rs` | Proof tree: base proofs → intermediate → root proof verification |
-| `contract_integration.rs` | Registry registration, staking, slashing, verifier checkpoint flow |
-
-## Local Testnet Verification
-
-Step-by-step procedure for verifying BlindHop on a local development chain:
-
-### Setup
-
-1. **Start a local chain**
-   ```bash
-   substrate-node --dev
-   ```
-
-2. **Launch 5+ mixnode instances** (mixed validator + standalone, varying layers)
-   ```bash
-   for i in {1..5}; do
-     blindhop-mixnode --dev --port $((30000 + i)) --ws-port $((9900 + i)) &
-   done
-   ```
-
-3. **Deploy contracts** on local PolkaVM
-   ```bash
-   cargo build -p blindhop-contracts --target riscv32emac-unknown-none-polkavm
-   # Deploy registry + verifier to local chain
-   blindhop-deploy --dev
-   ```
-
-4. **Connect the BlindHop-wrapped light client** from browser
-   ```bash
-   cd wasm-node && npm run dev
-   # Open http://localhost:8080/demo.html
-   ```
-
-### Verification Checklist
-
-| # | Verification Step | Expected Result |
-|---|---|---|
-| 1 | Submit extrinsic through mixnet | Transaction confirmed on-chain |
-| 2 | Perform storage queries | Correct responses returned through mixnet |
-| 3 | Verify Stwo relay proofs at exit node | Root proof (~35 KB) verifies in < 100ms |
-| 4 | Observe cover traffic | Flowing at configured λ rate, uniform 2 KB packets |
-| 5 | Rotate validator set (session change) | Key refresh completes, new session keys active |
-| 6 | Kill mixnodes below threshold (`Required` mode) | Client refuses all connections, emits error |
-| 7 | Kill mixnodes below threshold (`BestEffort` mode) | Client warns, falls back to direct connection |
-| 8 | Verify on-chain Blake3 root hash | Matches DHT-stored proof content |
-| 9 | Submit fraud proof for misbehavior | Target mixnode's bond slashed |
-| 10 | Register standalone operator | Appears in routing table after threshold check |
-| 11 | Check proof aggregation tree | Binary tree produces valid root from base proofs |
+| `proxy_direct_mode` | Proxy in None mode: WS pass-through to Substrate |
+| `proxy_nym_roundtrip` | Proxy → Nym → Exit → Substrate → SURB reply |
+| `mode_switching` | Runtime transition between None/Fast/Full |
+| `exit_rpc_forwarding` | Exit receives MixnetMessage, forwards JSON-RPC, returns response |
+| `metrics_collection` | Latency and message count tracking across modes |
 
 ## Manual Verification
 
-### Browser Demo
-Connect the demo page to a testnet, submit a transaction, and observe:
-- Anonymity metrics (total mixnodes, pool composition, privacy status)
-- Proof verification state (root hash, last verified timestamp)
-- Cover traffic indicators
+### Quick Smoke Test
 
-### Latency Testing
-Time the round-trip at each hop count:
+1. **Start the exit service:**
+   ```bash
+   cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-paseo
+   ```
+   Verify: Nym address printed to stdout.
 
-| Hops | Expected RT |
+2. **Start the proxy:**
+   ```bash
+   cargo run -p blindhop-proxy -- \
+     --privacy-mode full \
+     --exit-address <NYM_ADDRESS>
+   ```
+   Verify: "Listening on 127.0.0.1:9500" message.
+
+3. **Query via proxy:**
+   ```bash
+   websocat ws://127.0.0.1:9500 <<< \
+     '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader"}'
+   ```
+   Verify: Valid JSON-RPC response with block header.
+
+### Demo UI Verification
+
+```bash
+./scripts/run_demo.sh --mode full --exit-address <NYM_ADDRESS>
+```
+
+Open `http://localhost:8080` and verify:
+
+| # | Verification Step | Expected Result |
+|---|---|---|
+| 1 | Privacy slider at "Full" | Green indicator, "5-hop Mixnet — Metadata Private" |
+| 2 | Click "Start Querying" | Status badge turns green "Connected" |
+| 3 | Observe latency metrics | p50/p95 values populated |
+| 4 | Observe chart | Green line showing latency points |
+| 5 | Slide to "None" | Red indicator, direct connection, lower latency |
+| 6 | Slide to "Fast" | Yellow indicator, 2-hop mode |
+| 7 | Check overhead bar | Shows latency difference vs direct |
+| 8 | Check chain data | Block number incrementing |
+
+### Latency Benchmarking
+
+```bash
+./scripts/benchmark.sh
+```
+
+Expected latency ranges:
+
+| Mode | Expected Round-Trip |
 |---|---|
-| 1 | ~3.2 s |
-| 2 | ~4.2 s |
-| 3 | ~5.1 s |
-| 4 | ~6.2 s |
-| 5 | ~7.3 s |
+| None (direct) | 50-200 ms |
+| Fast (2-hop) | 200-700 ms |
+| Full (5-hop) | 1-4 s |
 
-### Traffic Analysis (Wireshark)
-Capture network traffic and verify:
-- All packets are exactly 2,048 bytes
-- Packet intervals follow Poisson distribution
-- No distinguishable pattern between real and cover traffic
+## CI/CD
 
-### Proof Size Verification
-- Individual base proofs: ~8 KB
-- Root proof (3-hop): ~35 KB
-- On-chain commitment: exactly 128 bytes (Blake3 hash)
-- PolkaVM verification time: < 10ms
+### PR Checks (`.github/workflows/ci.yml`)
+
+- `cargo build --workspace`
+- `cargo test --workspace`
+- `cargo clippy --workspace -- -D warnings`
+- `cargo fmt --workspace -- --check`
+
+### Nightly (`.github/workflows/nightly.yml`)
+
+- Full workspace release build
+- Unit tests
+- Nym integration tests (with `--ignored` flag)
+
+## Code Quality
+
+```bash
+# Lint check
+cargo clippy --workspace -- -D warnings
+
+# Format check
+cargo fmt --workspace -- --check
+
+# Fix formatting
+cargo fmt --workspace
+```

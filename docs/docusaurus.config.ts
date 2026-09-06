@@ -48,7 +48,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
-          editUrl: 'INSERT_GITHUB_REPO_URL/tree/main/docs/',
+          editUrl: 'https://github.com/blindhop/blindhop/tree/main/docs/',
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
         },
@@ -85,12 +85,8 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://www.npmjs.com/package/@blindhop/client',
-          label: 'npm',
-          position: 'right',
-        },
-        {
-          href: 'INSERT_GITHUB_REPO_URL',
+
+          href: 'https://github.com/blindhop/blindhop',
           label: 'GitHub',
           position: 'right',
         },
@@ -104,22 +100,21 @@ const config: Config = {
           items: [
             { label: 'Getting Started', to: '/getting-started' },
             { label: 'Architecture', to: '/architecture/overview' },
-            { label: 'API Reference', to: '/api/builder' },
+            { label: 'Guides', to: '/guides/native-proxy' },
           ],
         },
         {
-          title: 'Specifications',
+          title: 'Protocol',
           items: [
             { label: 'Sphinx Protocol', to: '/protocol/sphinx' },
-            { label: 'ZK Circuits', to: '/zk/stwo-overview' },
-            { label: 'Smart Contracts', to: '/contracts/registry' },
+            { label: 'Loopix Cover Traffic', to: '/protocol/loopix' },
+            { label: 'Threat Model', to: '/security/threat-model' },
           ],
         },
         {
           title: 'Community',
           items: [
-            { label: 'GitHub', href: 'INSERT_GITHUB_REPO_URL' },
-            { label: 'npm', href: 'https://www.npmjs.com/package/@blindhop/client' },
+            { label: 'GitHub', href: 'https://github.com/blindhop/blindhop' },
           ],
         },
       ],

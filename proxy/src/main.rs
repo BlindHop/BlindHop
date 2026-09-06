@@ -1,45 +1,91 @@
-//! BlindHop Proxy — Local WebSocket proxy that bridges smoldot traffic
-//! through the Sphinx relay path.
+//! BlindHop Proxy — Local WebSocket proxy that routes smoldot traffic
+//! through the Nym mixnet for metadata privacy.
 //!
-//! Smoldot connects to this proxy (thinks it's a full node).
-//! The proxy Sphinx-wraps every message and routes through relays.
+//! # Architecture
+//!
+//! ```text
+//! Smoldot (Browser) --WS--> blindhop-proxy --Nym--> Nym Mixnet --> blindhop-exit --> Substrate Full Node
+//! ```
+//!
+//! # Privacy Modes
+//!
+//! - **None**: Direct WebSocket passthrough (no privacy, lowest latency)
+//! - **Fast**: 2-hop Nym dVPN mode (IP hidden, ~200-500ms overhead)
+//! - **Full**: 5-hop Nym mixnet + cover traffic (metadata private, ~1-3s overhead)
 
 mod bridge;
+mod mode;
+mod nym_transport;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use blindhop_lib::sphinx::keys::{NodeInfo, PublicKey};
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio_tungstenite::tungstenite::Message;
 
-use bridge::{connect_to_entry_relay, send_through_relay_path, RelayPath};
+use blindhop_common::config::{ExitBackendType, PrivacyMode};
 
 #[derive(Parser)]
-#[command(name = "blindhop-proxy", about = "BlindHop local WebSocket proxy")]
+#[command(
+    name = "blindhop-proxy",
+    about = "BlindHop local WebSocket proxy — routes smoldot traffic through the Nym mixnet",
+    version
+)]
 struct Cli {
     /// Listen address for incoming smoldot connections.
     #[arg(short, long, default_value = "127.0.0.1:9500")]
     listen: SocketAddr,
 
-    /// Comma-separated relay path addresses (e.g., "ws://127.0.0.1:9401,ws://127.0.0.1:9402").
-    #[arg(long)]
-    relay_path: String,
-
-    /// Comma-separated relay public keys in hex (same order as relay_path).
-    #[arg(long)]
-    relay_keys: String,
-
-    /// Target full node WebSocket URL.
-    #[arg(long)]
+    /// Target Substrate full node WebSocket URL.
+    #[arg(long, default_value = "wss://sys.turboflakes.io/asset-hub-paseo")]
     target: String,
 
-    /// Target full node public key in hex (for Sphinx destination).
+    /// Privacy mode: none, fast, or full.
+    #[arg(long, default_value = "full")]
+    privacy_mode: String,
+
+    /// Exit backend type: service-provider or socks5.
+    #[arg(long, default_value = "service-provider")]
+    exit_backend: String,
+
+    /// Nym address of the BlindHop exit service.
     #[arg(long)]
-    target_key: String,
+    exit_address: Option<String>,
+
+    /// Nym gateway to connect through (auto-selected if not specified).
+    #[arg(long)]
+    nym_gateway: Option<String>,
+}
+
+impl Cli {
+    fn privacy_mode(&self) -> PrivacyMode {
+        match self.privacy_mode.to_lowercase().as_str() {
+            "none" => PrivacyMode::None,
+            "fast" => PrivacyMode::Fast,
+            "full" => PrivacyMode::Full,
+            _ => {
+                tracing::warn!(
+                    "Unknown privacy mode '{}', defaulting to Full",
+                    self.privacy_mode
+                );
+                PrivacyMode::Full
+            }
+        }
+    }
+
+    fn exit_backend(&self) -> ExitBackendType {
+        match self.exit_backend.to_lowercase().as_str() {
+            "service-provider" | "sp" => ExitBackendType::ServiceProvider,
+            "socks5" | "socks" => ExitBackendType::Socks5,
+            _ => {
+                tracing::warn!(
+                    "Unknown exit backend '{}', defaulting to ServiceProvider",
+                    self.exit_backend
+                );
+                ExitBackendType::ServiceProvider
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -53,133 +99,34 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Parse relay path
-    let relay_addrs: Vec<&str> = cli.relay_path.split(',').collect();
-    let relay_key_hexes: Vec<&str> = cli.relay_keys.split(',').collect();
+    let privacy_mode = cli.privacy_mode();
+    let exit_backend = cli.exit_backend();
 
-    if relay_addrs.len() != relay_key_hexes.len() {
-        anyhow::bail!(
-            "Number of relay addresses ({}) must match number of relay keys ({})",
-            relay_addrs.len(),
-            relay_key_hexes.len()
-        );
-    }
-
-    let mut nodes = Vec::new();
-    for (addr_str, key_hex) in relay_addrs.iter().zip(relay_key_hexes.iter()) {
-        let addr_str = addr_str.trim();
-        let key_hex = key_hex.trim();
-
-        // Parse address from ws://host:port format
-        let addr: SocketAddr = addr_str
-            .trim_start_matches("ws://")
-            .trim_start_matches("wss://")
-            .parse()
-            .with_context(|| format!("Invalid relay address: {}", addr_str))?;
-
-        let key_bytes = blindhop_lib::sphinx::keys::hex::decode(key_hex)
-            .map_err(|e| anyhow::anyhow!("Invalid relay key hex: {}", e))?;
-        let mut key_arr = [0u8; 32];
-        if key_bytes.len() != 32 {
-            anyhow::bail!("Relay key must be 32 bytes");
-        }
-        key_arr.copy_from_slice(&key_bytes);
-
-        nodes.push(NodeInfo {
-            public_key: PublicKey::from(key_arr),
-            address: addr,
-        });
-    }
-
-    // Parse target
-    let target_key_bytes = blindhop_lib::sphinx::keys::hex::decode(cli.target_key.trim())
-        .map_err(|e| anyhow::anyhow!("Invalid target key hex: {}", e))?;
-    let mut target_key_arr = [0u8; 32];
-    target_key_arr.copy_from_slice(&target_key_bytes);
-
-    // For the target, use a dummy address (the exit relay handles actual forwarding)
-    let target_node = NodeInfo {
-        public_key: PublicKey::from(target_key_arr),
-        address: "0.0.0.0:0".parse().unwrap(),
+    let config = blindhop_common::config::BlindHopConfig {
+        listen_addr: cli.listen,
+        target_rpc: cli.target.clone(),
+        privacy_mode,
+        exit_backend,
+        exit_address: cli.exit_address.clone(),
+        nym_gateway: cli.nym_gateway.clone(),
+        ..Default::default()
     };
 
-    let relay_path = Arc::new(RelayPath {
-        nodes,
-        target: target_node,
-    });
-
-    let entry_relay_url = relay_addrs[0].trim().to_string();
-
-    tracing::info!("Starting BlindHop proxy");
-    tracing::info!("  Listen: {}", cli.listen);
-    tracing::info!("  Relay path: {} hops", relay_path.nodes.len());
-    tracing::info!("  Target: {}", cli.target);
-
-    let listener = TcpListener::bind(cli.listen)
-        .await
-        .with_context(|| format!("Failed to bind to {}", cli.listen))?;
-
-    tracing::info!("Proxy listening on ws://{}", cli.listen);
-
-    loop {
-        let (stream, peer_addr) = listener.accept().await?;
-        tracing::info!("Smoldot connected from {}", peer_addr);
-
-        let relay_path = relay_path.clone();
-        let entry_url = entry_relay_url.clone();
-
-        tokio::spawn(async move {
-            let ws = match tokio_tungstenite::accept_async(stream).await {
-                Ok(ws) => ws,
-                Err(e) => {
-                    tracing::warn!("WebSocket handshake failed: {}", e);
-                    return;
-                }
-            };
-
-            let (mut ws_tx, mut ws_rx) = ws.split();
-
-            // Connect to entry relay
-            let mut entry_ws = match connect_to_entry_relay(&entry_url).await {
-                Ok(ws) => ws,
-                Err(e) => {
-                    tracing::error!("Failed to connect to entry relay: {}", e);
-                    return;
-                }
-            };
-
-            while let Some(msg) = ws_rx.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        // JSON-RPC from smoldot → Sphinx wrap → relay path
-                        match send_through_relay_path(
-                            text.as_bytes(),
-                            &relay_path,
-                            &mut entry_ws,
-                        )
-                        .await
-                        {
-                            Ok(reply) => {
-                                let reply_text = String::from_utf8_lossy(&reply).to_string();
-                                tracing::debug!("Got reply from relay path ({} bytes): {}", reply.len(), &reply_text[..reply_text.len().min(200)]);
-                                if let Err(e) = ws_tx.send(Message::Text(reply_text.into())).await {
-                                    tracing::warn!("Failed to send reply to smoldot: {}", e);
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Relay path error: {}", e);
-                            }
-                        }
-                    }
-                    Ok(Message::Close(_)) => break,
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::debug!("Client disconnected: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
+    tracing::info!("Starting BlindHop Proxy (Nym Mixnet)");
+    tracing::info!("  Listen:       {}", config.listen_addr);
+    tracing::info!("  Target:       {}", config.target_rpc);
+    tracing::info!("  Privacy:      {} {}", privacy_mode.indicator(), privacy_mode);
+    tracing::info!("  Exit backend: {}", exit_backend);
+    if let Some(ref addr) = config.exit_address {
+        tracing::info!("  Exit address: {}", addr);
     }
+
+    let listener = TcpListener::bind(config.listen_addr)
+        .await
+        .with_context(|| format!("Failed to bind to {}", config.listen_addr))?;
+
+    tracing::info!("Proxy listening on ws://{}", config.listen_addr);
+
+    // Start accepting connections
+    bridge::run_proxy(listener, config).await
 }

@@ -1,102 +1,284 @@
-// BlindHop MVP Demo — Client-side Logic
-// Queries a Substrate chain via WebSocket in two modes:
-// 1. Native: direct WebSocket to the full node
-// 2. BlindHop: WebSocket through the local blindhop-proxy (Sphinx relay path)
+// BlindHop Demo - Browser-Embedded Nym Client + Native Proxy Fallback
+//
+// Auto-detects connection mode:
+//   1. Try native blindhop-proxy at ws://localhost:9500
+//   2. If not found, fall back to browser Nym Wasm client
+//
+// In browser mode, the Nym SDK runs directly in a Web Worker — no local setup needed.
+
+import { NymBrowserClient } from './nym-client.js';
+
+// ——— Configuration ———
 
 const CONFIG = {
-    nativeTarget: 'wss://sys.turboflakes.io/asset-hub-paseo',
-    blindhopProxy: 'ws://127.0.0.1:9500',
+    proxyUrl: 'ws://127.0.0.1:9500',
+    directTarget: 'wss://sys.turboflakes.io/asset-hub-paseo',
     queryInterval: 5000,
+    proxyDetectTimeout: 2000,
+    defaultExitAddress: '', // Set after deploying exit service
 };
 
-// State
-let mode = 'native';
+// Privacy modes mapped to slider positions
+const MODES = ['none', 'fast', 'full'];
+const MODE_INFO = {
+    none: {
+        emoji: '🔴',
+        label: 'Direct — IP Exposed',
+        route: 'Direct WebSocket (no mixnet)',
+        hops: 0,
+        cover: false,
+        ipLabel: 'YOUR IP ADDRESS',
+        ipExposed: true,
+    },
+    fast: {
+        emoji: '🟡',
+        label: '2-hop dVPN — IP Hidden',
+        route: 'Nym dVPN (2 hops)',
+        hops: 2,
+        cover: false,
+        ipLabel: 'NYM EXIT NODE IP',
+        ipExposed: false,
+    },
+    full: {
+        emoji: '🟢',
+        label: '5-hop Mixnet — Metadata Private',
+        route: 'Nym Mixnet (5 hops + cover traffic)',
+        hops: 5,
+        cover: true,
+        ipLabel: 'NYM EXIT NODE IP',
+        ipExposed: false,
+    },
+};
+
+// ——— State ———
+
+let currentMode = 'full';
+let connectionMode = null; // 'native' | 'browser' | null
 let queryTimer = null;
-let nativeWs = null;
-let blindhopWs = null;
-let nativeMetrics = { latencies: [], requests: 0, lastBlock: null, chain: null };
-let blindhopMetrics = { latencies: [], requests: 0, lastBlock: null, chain: null };
+let proxyWs = null;
+let directWs = null;
+let nymClient = null;
 let requestId = 1;
 let pendingRequests = {};
+let chart = null;
 
-// Chart data
-const chartData = { native: [], blindhop: [] };
-const MAX_CHART_POINTS = 50;
+// Metrics per mode
+let metrics = {
+    none: { latencies: [], requests: 0, lastBlock: null, chain: null },
+    fast: { latencies: [], requests: 0, lastBlock: null, chain: null },
+    full: { latencies: [], requests: 0, lastBlock: null, chain: null },
+};
 
-// ——— Mode Toggle ———
+let directLatencies = [];
 
-function setMode(newMode) {
-    mode = newMode;
-    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById(`btn-${newMode}`).classList.add('active');
+// ——— Auto-Detection ———
 
-    const panels = document.getElementById('panels');
-    const nativePanel = document.getElementById('panel-native');
-    const bhPanel = document.getElementById('panel-blindhop');
-    const overheadBar = document.getElementById('overhead-bar');
-    const chartContainer = document.getElementById('chart-container');
+/**
+ * Test if a WebSocket endpoint is reachable within a timeout.
+ */
+function testWebSocket(url, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        const timer = setTimeout(() => {
+            ws.close();
+            reject(new Error('Timeout'));
+        }, timeoutMs);
 
-    if (newMode === 'native') {
-        nativePanel.style.display = 'block';
-        bhPanel.style.display = 'none';
-        panels.classList.remove('side-by-side');
-        overheadBar.style.display = 'none';
-        chartContainer.style.display = 'none';
-    } else if (newMode === 'blindhop') {
-        nativePanel.style.display = 'none';
-        bhPanel.style.display = 'block';
-        panels.classList.remove('side-by-side');
-        overheadBar.style.display = 'none';
-        chartContainer.style.display = 'none';
+        ws.onopen = () => {
+            clearTimeout(timer);
+            ws.close();
+            resolve(true);
+        };
+        ws.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('Connection failed'));
+        };
+    });
+}
+
+/**
+ * Detect whether native blindhop-proxy is running.
+ * Returns 'native' if proxy found, 'browser' otherwise.
+ */
+async function detectConnectionMode() {
+    updateConnectionMode('detecting');
+    try {
+        await testWebSocket(CONFIG.proxyUrl, CONFIG.proxyDetectTimeout);
+        console.log('[Detection] Native proxy found at', CONFIG.proxyUrl);
+        return 'native';
+    } catch {
+        console.log('[Detection] Native proxy not found, using browser Nym client');
+        return 'browser';
+    }
+}
+
+// ——— Privacy Slider ———
+
+function initSlider() {
+    const slider = document.getElementById('privacy-slider');
+    slider.addEventListener('input', () => {
+        const val = parseInt(slider.value);
+        const mode = MODES[val];
+
+        // In browser mode, skip 'fast' (jump to 'full' instead)
+        if (connectionMode === 'browser' && mode === 'fast') {
+            slider.value = 2;
+            setPrivacyMode('full');
+            return;
+        }
+
+        setPrivacyMode(mode);
+    });
+
+    // Click on marks to jump
+    document.querySelectorAll('.mark').forEach(mark => {
+        mark.addEventListener('click', () => {
+            const val = parseInt(mark.dataset.value);
+            const mode = MODES[val];
+
+            if (connectionMode === 'browser' && mode === 'fast') return;
+
+            slider.value = val;
+            setPrivacyMode(mode);
+        });
+    });
+
+    setPrivacyMode('full');
+}
+
+function setPrivacyMode(mode) {
+    currentMode = mode;
+    const info = MODE_INFO[mode];
+    const slider = document.getElementById('privacy-slider');
+    slider.value = MODES.indexOf(mode);
+
+    // Update slider fill
+    const fillPct = (MODES.indexOf(mode) / 2) * 100;
+    document.getElementById('slider-fill').style.width = fillPct + '%';
+
+    // Update indicator
+    const indicator = document.getElementById('privacy-indicator');
+    indicator.className = 'privacy-indicator mode-' + mode;
+    document.getElementById('indicator-emoji').textContent = info.emoji;
+    document.getElementById('indicator-text').textContent = info.label;
+
+    // Update connection card
+    document.getElementById('route-info').textContent = info.route;
+    document.getElementById('hop-count').textContent =
+        info.hops === 0 ? 'None (direct)' : `${info.hops} hops`;
+    document.getElementById('cover-status').textContent =
+        info.cover ? '✓ Active (Loopix)' : '✗ Disabled';
+
+    const ipRow = document.getElementById('ip-row');
+    const ipValue = document.getElementById('ip-visibility');
+    ipRow.className = 'stat-row ip-row ' + (info.ipExposed ? 'exposed' : 'hidden');
+    ipValue.textContent = info.ipLabel;
+
+    // Notify native proxy of mode change if connected
+    if (connectionMode === 'native' && proxyWs && proxyWs.readyState === WebSocket.OPEN) {
+        sendToProxy('blindhop_setPrivacyMode', [mode]);
+    }
+}
+
+function updateSliderForMode(connMode) {
+    const fastMark = document.querySelector('.mark[data-value="1"]');
+    if (connMode === 'browser') {
+        fastMark.classList.add('disabled');
+        fastMark.title = 'Install native proxy for 2-hop Fast mode';
     } else {
-        nativePanel.style.display = 'block';
-        bhPanel.style.display = 'block';
-        panels.classList.add('side-by-side');
-        overheadBar.style.display = 'flex';
-        chartContainer.style.display = 'block';
+        fastMark.classList.remove('disabled');
+        fastMark.title = '';
+    }
+}
+
+// ——— Connection Mode UI ———
+
+function updateConnectionMode(mode) {
+    const badge = document.getElementById('connection-mode-badge');
+    if (!badge) return;
+
+    switch (mode) {
+        case 'detecting':
+            badge.className = 'connection-mode-badge detecting';
+            badge.textContent = '🔍 Detecting...';
+            break;
+        case 'native':
+            badge.className = 'connection-mode-badge native';
+            badge.textContent = '🖥️ Native Proxy';
+            break;
+        case 'browser':
+            badge.className = 'connection-mode-badge browser';
+            badge.textContent = '🌐 Browser (Nym Wasm)';
+            break;
     }
 }
 
 // ——— WebSocket Connections ———
 
-function connectNative() {
+function connectProxy() {
     return new Promise((resolve, reject) => {
         try {
-            nativeWs = new WebSocket(CONFIG.nativeTarget);
-            nativeWs.onopen = () => {
-                console.log('[Native] Connected');
+            proxyWs = new WebSocket(CONFIG.proxyUrl);
+            proxyWs.onopen = () => {
+                console.log('[Proxy] Connected');
                 resolve();
             };
-            nativeWs.onmessage = (event) => handleResponse('native', event.data);
-            nativeWs.onerror = (e) => {
-                console.error('[Native] Error:', e);
+            proxyWs.onmessage = (event) => handleResponse('proxy', event.data);
+            proxyWs.onerror = (e) => {
+                console.error('[Proxy] Error:', e);
                 reject(e);
             };
-            nativeWs.onclose = () => console.log('[Native] Disconnected');
+            proxyWs.onclose = () => {
+                console.log('[Proxy] Disconnected');
+                updateStatus('disconnected');
+            };
         } catch (e) {
             reject(e);
         }
     });
 }
 
-function connectBlindHop() {
+function connectDirect() {
     return new Promise((resolve, reject) => {
         try {
-            blindhopWs = new WebSocket(CONFIG.blindhopProxy);
-            blindhopWs.onopen = () => {
-                console.log('[BlindHop] Connected');
+            directWs = new WebSocket(CONFIG.directTarget);
+            directWs.onopen = () => {
+                console.log('[Direct] Connected');
                 resolve();
             };
-            blindhopWs.onmessage = (event) => handleResponse('blindhop', event.data);
-            blindhopWs.onerror = (e) => {
-                console.error('[BlindHop] Error:', e);
+            directWs.onmessage = (event) => handleResponse('direct', event.data);
+            directWs.onerror = (e) => {
+                console.error('[Direct] Error:', e);
                 reject(e);
             };
-            blindhopWs.onclose = () => console.log('[BlindHop] Disconnected');
+            directWs.onclose = () => console.log('[Direct] Disconnected');
         } catch (e) {
             reject(e);
         }
     });
+}
+
+async function connectNymBrowser() {
+    const exitInput = document.getElementById('exit-address');
+    const exitAddress = exitInput ? exitInput.value.trim() : CONFIG.defaultExitAddress;
+
+    if (!exitAddress) {
+        throw new Error('Exit service Nym address is required. Enter it in the Exit Address field.');
+    }
+
+    nymClient = new NymBrowserClient();
+
+    nymClient.onStatusChange((status, message) => {
+        updateStatus(status === 'connected' ? 'connected' : 'connecting');
+        const nymStatus = document.getElementById('nym-status');
+        if (nymStatus) nymStatus.textContent = message;
+    });
+
+    nymClient.onResponse((jsonRpcString) => {
+        handleResponse('nym', jsonRpcString);
+    });
+
+    await nymClient.connect(exitAddress);
 }
 
 // ——— JSON-RPC ———
@@ -120,53 +302,108 @@ function sendRpc(ws, method, params, source) {
     return id;
 }
 
+function sendToProxy(method, params) {
+    if (proxyWs && proxyWs.readyState === WebSocket.OPEN) {
+        const id = requestId++;
+        const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params: params || [] });
+        proxyWs.send(msg);
+        return id;
+    }
+    return null;
+}
+
+async function sendViaNym(method, params) {
+    if (!nymClient || !nymClient.isConnected) return null;
+
+    const id = requestId++;
+    const request = JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method,
+        params: params || [],
+    });
+
+    pendingRequests[`nym-${id}`] = {
+        sentAt: performance.now(),
+        source: 'nym',
+        method,
+    };
+
+    await nymClient.sendRequest(request);
+    return id;
+}
+
 function handleResponse(source, data) {
     try {
-        const response = JSON.parse(data);
+        const response = typeof data === 'string' ? JSON.parse(data) : data;
         const key = `${source}-${response.id}`;
         const pending = pendingRequests[key];
 
-        if (pending) {
-            const latency = performance.now() - pending.sentAt;
-            delete pendingRequests[key];
+        if (!pending) return;
 
-            const metrics = source === 'native' ? nativeMetrics : blindhopMetrics;
-            metrics.latencies.push(latency);
-            metrics.requests++;
+        const latency = performance.now() - pending.sentAt;
+        delete pendingRequests[key];
 
-            // Keep only last 100 latencies
-            if (metrics.latencies.length > 100) metrics.latencies.shift();
+        const modeMetrics = metrics[currentMode];
 
-            // Update chart data
-            chartData[source].push({ time: Date.now(), latency });
-            if (chartData[source].length > MAX_CHART_POINTS) chartData[source].shift();
-
-            // Parse block number from chain_getHeader response
-            if (pending.method === 'chain_getHeader' && response.result) {
-                const blockNum = parseInt(response.result.number, 16);
-                metrics.lastBlock = blockNum;
-            }
-
-            // Parse chain name
-            if (pending.method === 'system_chain' && response.result) {
-                metrics.chain = response.result;
-            }
-
-            updateUI();
+        if (source === 'proxy' || source === 'nym') {
+            modeMetrics.latencies.push(latency);
+            modeMetrics.requests++;
+            if (modeMetrics.latencies.length > 100) modeMetrics.latencies.shift();
+            if (chart) chart.addPoint(currentMode, latency);
+        } else if (source === 'direct') {
+            directLatencies.push(latency);
+            if (directLatencies.length > 100) directLatencies.shift();
+            metrics.none.latencies.push(latency);
+            metrics.none.requests++;
+            if (chart) chart.addPoint('none', latency);
         }
+
+        // Parse chain data
+        if (pending.method === 'chain_getHeader' && response.result) {
+            const blockNum = parseInt(response.result.number, 16);
+            if (source === 'proxy' || source === 'nym') {
+                modeMetrics.lastBlock = blockNum;
+            } else {
+                metrics.none.lastBlock = blockNum;
+            }
+        }
+
+        if (pending.method === 'system_chain' && response.result) {
+            if (source === 'proxy' || source === 'nym') {
+                modeMetrics.chain = response.result;
+            } else {
+                metrics.none.chain = response.result;
+            }
+        }
+
+        updateUI();
     } catch (e) {
         console.error(`[${source}] Parse error:`, e);
     }
 }
 
-// ——— Querying ———
+// ——— Query Loop ———
 
 function queryAll() {
-    if (nativeWs && nativeWs.readyState === WebSocket.OPEN) {
-        sendRpc(nativeWs, 'chain_getHeader', [], 'native');
+    if (currentMode === 'none') {
+        // Direct mode — query Substrate directly
+        if (directWs && directWs.readyState === WebSocket.OPEN) {
+            sendRpc(directWs, 'chain_getHeader', [], 'direct');
+        }
+    } else if (connectionMode === 'native') {
+        // Native proxy mode
+        if (proxyWs && proxyWs.readyState === WebSocket.OPEN) {
+            sendRpc(proxyWs, 'chain_getHeader', [], 'proxy');
+        }
+    } else if (connectionMode === 'browser') {
+        // Browser Nym mode
+        sendViaNym('chain_getHeader', []);
     }
-    if (blindhopWs && blindhopWs.readyState === WebSocket.OPEN) {
-        sendRpc(blindhopWs, 'chain_getHeader', [], 'blindhop');
+
+    // Always query direct for overhead comparison (if not in none mode)
+    if (currentMode !== 'none' && directWs && directWs.readyState === WebSocket.OPEN) {
+        sendRpc(directWs, 'chain_getHeader', [], 'direct');
     }
 }
 
@@ -174,33 +411,65 @@ async function startQuerying() {
     const startBtn = document.getElementById('btn-start');
     const stopBtn = document.getElementById('btn-stop');
     startBtn.disabled = true;
-    startBtn.textContent = '⏳ Connecting...';
+    startBtn.textContent = '⏳ Detecting...';
+    startBtn.classList.add('connecting');
+    updateStatus('connecting');
 
     try {
-        // Connect based on mode
-        if (mode === 'native' || mode === 'both') {
-            await connectNative();
-            sendRpc(nativeWs, 'system_chain', [], 'native');
+        // Step 1: Auto-detect connection mode
+        connectionMode = await detectConnectionMode();
+        updateConnectionMode(connectionMode);
+        updateSliderForMode(connectionMode);
+
+        // Step 2: Connect direct (for baseline)
+        startBtn.textContent = '⏳ Connecting direct...';
+        try {
+            await connectDirect();
+            sendRpc(directWs, 'system_chain', [], 'direct');
+        } catch (e) {
+            console.warn('[Direct] Could not connect for baseline:', e.message);
         }
-        if (mode === 'blindhop' || mode === 'both') {
+
+        // Step 3: Connect via detected mode
+        if (connectionMode === 'native') {
+            startBtn.textContent = '⏳ Connecting to proxy...';
+            await connectProxy();
+            sendRpc(proxyWs, 'system_chain', [], 'proxy');
+            updateStatus('connected');
+        } else {
+            startBtn.textContent = '⏳ Starting Nym client...';
             try {
-                await connectBlindHop();
-                sendRpc(blindhopWs, 'system_chain', [], 'blindhop');
+                await connectNymBrowser();
+                await sendViaNym('system_chain', []);
+                updateStatus('connected');
             } catch (e) {
-                console.warn('[BlindHop] Proxy not running. Start it with: scripts/run_demo.sh');
-                document.getElementById('bh-chain').textContent = '⚠ Proxy not running';
+                console.error('[NymBrowser] Connection failed:', e);
+                updateStatus('error');
+                const nymStatus = document.getElementById('nym-status');
+                if (nymStatus) nymStatus.textContent = `Error: ${e.message}`;
+
+                // Fall back to direct-only
+                if (!directWs || directWs.readyState !== WebSocket.OPEN) {
+                    startBtn.disabled = false;
+                    startBtn.textContent = '▶ Start Querying';
+                    startBtn.classList.remove('connecting');
+                    return;
+                }
+                setPrivacyMode('none');
             }
         }
 
         startBtn.textContent = '● Running';
+        startBtn.classList.remove('connecting');
         stopBtn.disabled = false;
 
-        // Start periodic queries
         queryAll();
         queryTimer = setInterval(queryAll, CONFIG.queryInterval);
     } catch (e) {
         startBtn.disabled = false;
         startBtn.textContent = '▶ Start Querying';
+        startBtn.classList.remove('connecting');
+        updateStatus('error');
         console.error('Connection failed:', e);
     }
 }
@@ -209,12 +478,24 @@ function stopQuerying() {
     if (queryTimer) clearInterval(queryTimer);
     queryTimer = null;
 
-    if (nativeWs) { nativeWs.close(); nativeWs = null; }
-    if (blindhopWs) { blindhopWs.close(); blindhopWs = null; }
+    if (proxyWs) { proxyWs.close(); proxyWs = null; }
+    if (directWs) { directWs.close(); directWs = null; }
+    if (nymClient) { nymClient.disconnect(); nymClient = null; }
+
+    connectionMode = null;
 
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-start').textContent = '▶ Start Querying';
     document.getElementById('btn-stop').disabled = true;
+    updateStatus('disconnected');
+    updateConnectionMode('detecting');
+
+    // Reset fast mark
+    const fastMark = document.querySelector('.mark[data-value="1"]');
+    if (fastMark) {
+        fastMark.classList.remove('disabled');
+        fastMark.title = '';
+    }
 }
 
 function updateInterval() {
@@ -234,98 +515,71 @@ function percentile(arr, p) {
     return sorted[Math.max(0, idx)];
 }
 
+function formatLatency(ms) {
+    if (ms === 0) return '—';
+    if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${ms.toFixed(0)}ms`;
+}
+
+function updateStatus(status) {
+    const badge = document.getElementById('status-badge');
+    badge.className = 'status-badge ' + status;
+    badge.textContent = status === 'connected' ? 'Connected'
+        : status === 'connecting' ? 'Connecting...'
+            : status === 'error' ? 'Connection Error'
+                : 'Disconnected';
+}
+
 function updateUI() {
-    // Native panel
-    const np50 = percentile(nativeMetrics.latencies, 50);
-    document.getElementById('native-chain').textContent = nativeMetrics.chain || '—';
-    document.getElementById('native-block').textContent = nativeMetrics.lastBlock
-        ? `#${nativeMetrics.lastBlock.toLocaleString()}`
-        : '—';
-    document.getElementById('native-latency').textContent = np50 > 0 ? `${np50.toFixed(0)}ms` : '—';
-    document.getElementById('native-requests').textContent = nativeMetrics.requests;
+    const m = metrics[currentMode];
+    const p50 = percentile(m.latencies, 50);
+    const p95 = percentile(m.latencies, 95);
 
-    // BlindHop panel
-    const bp50 = percentile(blindhopMetrics.latencies, 50);
-    document.getElementById('bh-chain').textContent = blindhopMetrics.chain || '—';
-    document.getElementById('bh-block').textContent = blindhopMetrics.lastBlock
-        ? `#${blindhopMetrics.lastBlock.toLocaleString()}`
-        : '—';
-    document.getElementById('bh-latency').textContent = bp50 > 0 ? `${bp50.toFixed(0)}ms` : '—';
-    document.getElementById('bh-requests').textContent = blindhopMetrics.requests;
+    const chain = m.chain || metrics.none.chain || '—';
+    const block = m.lastBlock || metrics.none.lastBlock;
 
-    // Overhead
-    if (np50 > 0 && bp50 > 0) {
-        const diff = bp50 - np50;
-        document.getElementById('overhead-value').textContent = `+${diff.toFixed(0)}ms`;
-        document.getElementById('overhead-detail').textContent =
-            `Native p50: ${np50.toFixed(0)}ms · BlindHop p50: ${bp50.toFixed(0)}ms`;
+    document.getElementById('chain-name').textContent = chain;
+    document.getElementById('latest-block').textContent =
+        block ? `#${block.toLocaleString()}` : '—';
+
+    document.getElementById('latency-p50').textContent = formatLatency(p50);
+    document.getElementById('latency-p95').textContent = formatLatency(p95);
+    document.getElementById('messages-sent').textContent = m.requests;
+    document.getElementById('messages-recv').textContent = m.requests;
+
+    const directP50 = percentile(directLatencies, 50);
+    if (directP50 > 0 && p50 > 0) {
+        const overhead = p50 - directP50;
+        document.getElementById('overhead-value').textContent =
+            overhead >= 0 ? `+${formatLatency(overhead)}` : formatLatency(overhead);
     }
-
-    // Redraw chart
-    if (mode === 'both') drawChart();
 }
 
-// ——— Canvas Chart ———
+// ——— Exit Address Persistence ———
 
-function drawChart() {
-    const canvas = document.getElementById('latency-chart');
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width;
-    const H = canvas.height;
+function initExitAddress() {
+    const input = document.getElementById('exit-address');
+    if (!input) return;
 
-    ctx.clearRect(0, 0, W, H);
-
-    // Background grid
-    ctx.strokeStyle = '#1a1a25';
-    ctx.lineWidth = 1;
-    for (let y = 0; y <= H; y += 40) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(W, y);
-        ctx.stroke();
+    const saved = localStorage.getItem('blindhop_exit_address');
+    if (saved) {
+        input.value = saved;
     }
 
-    // Find max latency for scaling
-    const allLatencies = [
-        ...chartData.native.map(d => d.latency),
-        ...chartData.blindhop.map(d => d.latency),
-    ];
-    const maxLatency = Math.max(100, ...allLatencies) * 1.1;
-
-    // Draw lines
-    function drawLine(data, color) {
-        if (data.length < 2) return;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let i = 0; i < data.length; i++) {
-            const x = (i / (MAX_CHART_POINTS - 1)) * W;
-            const y = H - (data[i].latency / maxLatency) * H;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        // Dots
-        ctx.fillStyle = color;
-        for (let i = 0; i < data.length; i++) {
-            const x = (i / (MAX_CHART_POINTS - 1)) * W;
-            const y = H - (data[i].latency / maxLatency) * H;
-            ctx.beginPath();
-            ctx.arc(x, y, 3, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    drawLine(chartData.native, '#ff4d6a');
-    drawLine(chartData.blindhop, '#00e599');
-
-    // Y-axis labels
-    ctx.fillStyle = '#8888a0';
-    ctx.font = '10px JetBrains Mono';
-    ctx.fillText(`${maxLatency.toFixed(0)}ms`, 4, 12);
-    ctx.fillText('0ms', 4, H - 4);
+    input.addEventListener('change', () => {
+        localStorage.setItem('blindhop_exit_address', input.value.trim());
+    });
 }
 
-// Init
-setMode('both');
+// ——— Init ———
+
+// Make functions available to onclick handlers in HTML
+window.startQuerying = startQuerying;
+window.stopQuerying = stopQuerying;
+window.updateInterval = updateInterval;
+
+document.addEventListener('DOMContentLoaded', () => {
+    chart = new window.LatencyChart('latency-chart');
+    initSlider();
+    initExitAddress();
+});

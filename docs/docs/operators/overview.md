@@ -1,52 +1,44 @@
 ---
 sidebar_position: 1
-title: Operator Overview
+title: Operators Overview
 ---
 
-# Mixnode Operator Overview
+# Running a BlindHop Exit Service
 
-BlindHop's mixnet is operated by two classes of nodes: **validator-mixnodes** (chain validators running the BlindHop plugin) and **standalone operators** (independent operators who stake a bond).
+## Overview
 
-## Dual-Class Model
+BlindHop's exit service (`blindhop-exit`) runs as a Nym Service Provider, receiving anonymous traffic from the mixnet and forwarding JSON-RPC requests to Substrate full nodes.
 
-```mermaid
-graph TD
-    A["Active Validator Set"] --> B{"Running BlindHop?"}
-    B -- Yes --> C["Validator-Mixnode\n(implicitly staked)"]
-    B -- No --> D["Skip"]
+## Requirements
 
-    E["Registry Contract"] --> F["Standalone Operator\n(explicit staking bond)"]
+- **Server** with stable internet connection
+- **Rust toolchain** (stable, edition 2024)
+- **Access to a Substrate full node** (direct or via public RPC endpoint)
 
-    C --> G{"Pool ≥ threshold?"}
-    F --> G
+## Quick Start
 
-    G -- Yes --> H["Validators only"]
-    G -- No --> I["Fill with standalones"]
+```bash
+cargo build -p blindhop-exit --release
+
+./target/release/blindhop-exit \
+  --target-rpc wss://sys.turboflakes.io/asset-hub-paseo
 ```
 
-### Priority: Validators First
+The exit service will:
+1. Connect to the Nym mixnet as a Service Provider
+2. Print its Nym address to stdout
+3. Write the address to `.exit_nym_address`
+4. Begin processing incoming requests
 
-1. **Validators** are always prioritized — they already have economic bonds (staked KSM/DOT)
-2. **Standalones** fill remaining slots when validator-mixnodes alone don't meet the anonymity set threshold
-3. Both types must pass the same ZK eligibility proof
+## Architecture
 
-## Becoming an Operator
+The exit service has two components:
+- **Nym SP loop** (`service.rs`) — receives mixnet messages, parses MixnetMessage envelopes
+- **Exit backend** (`backend.rs`) — forwards JSON-RPC to the Substrate full node via WebSocket
 
-### Validator Path
-Simply run the `blindhop-full-node` library alongside your Substrate validator. No additional registration needed — BlindHop discovers you from the active validator set.
+## Future Plans
 
-### Standalone Path
-1. Call `register()` on the Registry contract with your staking bond
-2. Provide your x25519 public key and endpoint address
-3. Pass the ZK eligibility proof (Merkle membership in registry)
-4. Begin receiving and relaying Sphinx packets
-
-## Responsibilities
-
-| Duty | Frequency | Consequence of Failure |
-|---|---|---|
-| Relay Sphinx packets | Continuous | Loss of reputation (future: slashing) |
-| Generate cover traffic | Continuous | Slashed (cover compliance proof required) |
-| Submit eligibility checkpoint | Every N sessions | Warning → bond reduction → eviction |
-| Submit cover compliance proof | Every epoch | Warning → bond reduction → eviction |
-| Maintain uptime | Continuous | Removed from cascade after timeout |
+- **Community-operated exits** — registry of available exit services
+- **SOCKS5 fallback** — use Nym's built-in SOCKS5 proxy
+- **Multi-chain support** — route to different chains based on message metadata
+- **Load balancing** — distribute across multiple full nodes

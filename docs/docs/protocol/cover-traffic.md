@@ -1,69 +1,53 @@
 ---
-sidebar_position: 4
-title: Cover Traffic
+sidebar_position: 2
+title: Loopix Cover Traffic
+description: How Nym's Loopix protocol prevents traffic analysis
 ---
 
-# Cover Traffic
+# Loopix Cover Traffic
 
-Cover traffic is the backbone of BlindHop's traffic analysis resistance. Without it, an observer could infer user activity from traffic volume changes.
+In **Full privacy mode**, the Nym client generates cover traffic using the Loopix protocol. This is a key advantage over simple onion routing (like Tor).
 
-## Design Goal
+## What Is Cover Traffic?
 
-At any point in time, every network link carries a **constant Poisson stream** of 2 KB packets. An observer monitoring any link sees the same traffic pattern whether the user is actively transacting or idle.
+Cover traffic consists of dummy packets that are cryptographically indistinguishable from real traffic. They serve to:
 
-## Three Cover Traffic Types
+- **Hide activity patterns**: An observer cannot tell when a user is actually sending real data
+- **Prevent traffic analysis**: Constant packet flow masks bursts of real activity
+- **Provide sender anonymity**: Even if all mix nodes are compromised, the observer cannot distinguish real from cover packets
 
-### Client Loop Cover
+## Loopix Protocol
 
-The client generates cover packets that loop through the mixnet and return:
+Nym implements the Loopix anonymous communication system:
 
-```
-Client → Entry → Hop1 → ... → Exit → (SURB) → Client
-```
+### Packet Types
 
-**Parameters:**
-- Rate: `λ_client_loop` (default: 0.5 packets/sec)
-- These packets are processed identically to real traffic by all mixnodes
-- The client verifies the loop completed — doubles as a liveness check
+| Type | Path | Purpose |
+|------|------|---------|
+| **Real packets** | Sender → Mix nodes → Recipient | Carry actual data |
+| **Loop cover** | Sender → Mix nodes → Sender | Verify mixnet is working |
+| **Drop cover** | Sender → Mix nodes → (discarded) | Add noise to traffic flow |
 
-### Mixnode Drop Cover
+### Timing Distribution
 
-Each mixnode generates cover packets sent to random destinations within the mixnet:
+All packets (real and cover) are sent according to a **Poisson distribution**:
+- Packet intervals are memoryless (no timing patterns)
+- Rate parameter λ controls bandwidth usage
+- Real packets are inserted into the cover traffic stream
 
-```
-Mixnode_A → random route → Mixnode_B (dropped silently)
-```
+## BlindHop Privacy Modes
 
-**Parameters:**
-- Rate: `λ_node_drop` (default: 1.0 packets/sec per mixnode)
-- Fills traffic volume on internal links
-- Cannot be distinguished from forwarded real traffic
+| Mode | Cover Traffic | Effect |
+|------|--------------|--------|
+| **None** | ❌ | Direct connection, no privacy |
+| **Fast** | ❌ | IP hidden but timing visible |
+| **Full** | ✅ | IP hidden + timing hidden + traffic analysis resistant |
 
-### Mixnode Self-Loop Cover
+## Why This Matters
 
-Each mixnode generates self-addressed loop traffic:
+Without cover traffic (e.g., Tor, VPNs), an observer can determine:
+- **When** you're active (by watching packet timing)
+- **How much** data you're sending (by counting packets)
+- **Correlation** between your sends and blockchain events
 
-```
-Mixnode_A → random route → Mixnode_A (verified)
-```
-
-**Parameters:**
-- Rate: `λ_node_loop` (default: 0.2 packets/sec per mixnode)
-- Self-monitoring for network health
-- Logged for cover compliance proof generation
-
-## Cover Compliance
-
-Mixnodes must prove they generated the required cover traffic volume. This is enforced via a **ZK cover compliance proof** (see [Cover Compliance Proof](/zk/cover-compliance-proof)).
-
-Non-compliant mixnodes are **slashed** — their staking bond is confiscated by the Registry contract.
-
-## Bandwidth Considerations
-
-| Parameter | Default | Bandwidth |
-|---|---|---|
-| Client loop rate | 0.5 pkt/s | ~1 KB/s upload |
-| With real traffic | ~1.5 pkt/s total | ~3 KB/s upload |
-| Mobile-optimized | 0.1 pkt/s | ~200 B/s upload |
-
-The cover rate is **tunable** — lower for mobile/constrained clients, higher for desktop.
+With Loopix cover traffic, your traffic is indistinguishable from background noise.

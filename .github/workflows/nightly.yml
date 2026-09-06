@@ -1,0 +1,43 @@
+name: Nightly Integration Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  workflow_dispatch:  # Manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nym-integration:
+    name: Nym Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --workspace --release
+
+      - name: Run unit tests
+        run: cargo test --workspace
+
+      - name: Run Nym integration tests
+        run: cargo test --workspace -- --ignored
+        continue-on-error: true  # Nym mainnet tests may be flaky
+        env:
+          BLINDHOP_NYM_INTEGRATION: "1"

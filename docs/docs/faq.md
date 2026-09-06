@@ -8,58 +8,59 @@ title: FAQ
 ## General
 
 ### What is BlindHop?
-BlindHop is a mixnet privacy layer for the smoldot light client. It routes all light client traffic through a Sphinx/Loopix mixnet, hiding your IP address and transaction patterns.
+BlindHop is a mixnet privacy layer for Substrate light clients. It routes all light client traffic through the Nym mixnet (500+ nodes), hiding your IP address and transaction patterns from full nodes and network observers.
 
-### Does BlindHop require forking smoldot?
-No. BlindHop wraps smoldot's `PlatformRef` trait — a clean abstraction boundary. No fork needed, and you automatically inherit smoldot improvements.
+### How does BlindHop work?
+BlindHop runs as a local WebSocket proxy (`blindhop-proxy`) that intercepts smoldot's JSON-RPC traffic and routes it through the Nym mixnet to an exit service (`blindhop-exit`), which forwards requests to a Substrate full node. Responses return anonymously via SURB reply paths.
 
 ### Which chains does BlindHop support?
-Any chain that smoldot supports — Kusama, Polkadot, parachains, and solochains. BlindHop is chain-agnostic.
+Any chain that exposes a standard Substrate JSON-RPC endpoint — Kusama, Polkadot, Asset Hub, parachains, and solochains.
 
-### Does BlindHop add any new pallets?
-No. All on-chain logic is deployed as PolkaVM smart contracts on Asset Hub. Zero new pallets.
+### Does BlindHop require forking smoldot?
+No. BlindHop operates as a local WebSocket proxy. Smoldot connects to it like any other RPC endpoint. Zero modifications to smoldot needed.
 
 ## Privacy
 
 ### How does BlindHop differ from using a VPN?
-A VPN hides your IP from the destination but the VPN provider sees all your traffic. BlindHop uses multiple hops with ZK proofs — **no single entity** (including any mixnode) sees both your identity and your transaction.
+A VPN hides your IP from the destination but the VPN provider sees all your traffic. BlindHop uses the Nym mixnet with 5 hops — **no single entity** (including any mix node or the exit service) sees both your identity and your transaction.
 
-### Can a mixnode operator see my transactions?
-No. Each mixnode only sees an encrypted 2 KB packet. It decrypts one layer and forwards the result, which is still encrypted for the remaining hops. Only the exit node sees the plaintext transaction, but the exit node doesn't know your IP address.
+### What can the exit service operator see?
+The exit service sees the JSON-RPC requests in plaintext (it must forward them to the full node), but it **does not know who sent them**. The SURB reply mechanism ensures anonymity of the sender.
 
-### What if the mixnet has too few nodes?
-BlindHop's threshold engine detects this. In `required` mode, the client refuses to operate. In `best-effort` mode, it operates with a degraded privacy warning.
+### What about the Nym gateway?
+Your entry gateway knows your IP but not your traffic content or destination. The exit gateway knows the destination but not your IP. With 5 hops between them, correlation is infeasible.
+
+### What is the anonymity set?
+In Full mode, your traffic mixes with all other Nym users (thousands). This is fundamentally different from self-hosted relays where the anonymity set is the number of your own nodes.
+
+### What are the three privacy modes?
+- **None**: Direct connection to the full node (no privacy, lowest latency)
+- **Fast**: 2-hop Nym path (IP hidden, ~200-500ms overhead)
+- **Full**: 5-hop Nym path with cover traffic (metadata private, ~1-3s overhead)
 
 ## Performance
 
 ### How much latency does BlindHop add?
-With 3 hops and default settings (500ms mean delay), expect ~5 seconds round-trip. This is configurable — lower the delay parameter for faster operation.
+- **None mode**: ~0ms (direct connection)
+- **Fast mode**: ~200-500ms round-trip overhead
+- **Full mode**: ~1-3s round-trip overhead (includes Poisson mixing delays)
 
-### Can I use BlindHop on mobile?
-Yes. The cover traffic rate can be lowered to ~200 bytes/sec for mobile. The TX validity proof generates in Wasm (2-3 seconds on modern phones).
-
-### How big are the ZK proofs?
-Individual base proofs are ~8 KB. The root proof (after binary tree aggregation) is ~35 KB. Only a 128-byte Blake3 hash is stored on-chain.
-
-## Security
-
-### Is there a trusted setup?
-No. Stwo Circle STARKs are fully transparent — no trusted setup ceremony needed.
-
-### Is BlindHop post-quantum secure?
-Yes. Stwo uses hash-based commitments (Poseidon2, Blake3), which are resistant to quantum computing attacks. The x25519 key exchange is NOT post-quantum, but BlindHop can migrate to post-quantum key exchange (e.g., Kyber) when Wasm implementations mature.
-
-### What happens if a mixnode cheats?
-The ZK relay proof will be invalid, and the node's bond is slashed via a fraud proof submitted to the Registry contract.
+### Can I switch modes at runtime?
+Yes. Send a `blindhop_setPrivacyMode` JSON-RPC message to the proxy, or use the privacy slider in the demo UI.
 
 ## Operations
 
-### How do I become a mixnode operator?
-**Validators**: Run the BlindHop plugin alongside your full node. No registration needed.
-**Standalone**: Register on the Registry contract with a staking bond.
+### How do I run the exit service?
+```bash
+cargo run -p blindhop-exit -- --target-rpc wss://your-substrate-node.example.com
+```
+The exit service connects to the Nym mixnet as a Service Provider and prints its Nym address.
+
+### Do I need to run my own exit service?
+For the MVP, yes. In the future, BlindHop will support community-operated exit services and Nym's built-in SOCKS5 proxy as a fallback.
 
 ### What are the bandwidth requirements?
-~50 KB/s for packet relay + cover traffic on a typical mixnode. This is modest by modern standards.
+The exit service handles JSON-RPC traffic (typically < 1 KB per request/response). Bandwidth is modest — similar to running a WebSocket RPC proxy.
 
-### Can I use BlindHop without running a mixnode?
-Yes. Regular users just install `@blindhop/client` and connect as a client. You only need to run a mixnode if you want to be an operator.
+### Can I use BlindHop without the Nym mixnet?
+Yes, in **None mode**. The proxy forwards traffic directly without using Nym. This is useful for development and when privacy is not required.
