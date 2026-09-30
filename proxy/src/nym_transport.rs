@@ -4,12 +4,13 @@
 //! the pluggable `MixnetTransport` interface for routing traffic
 //! through the Nym mixnet.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use nym_sdk::mixnet::MixnetMessageSender;
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use blindhop_common::config::PrivacyMode;
 use blindhop_common::error::{BlindHopError, Result};
@@ -29,16 +30,23 @@ pub struct NymTransport {
     exit_address: String,
 
     /// Current privacy mode.
+    ///
+    /// A `std` lock (never held across `.await`) so sync trait methods can
+    /// read it without `blocking_read()`, which panics inside the runtime.
     privacy_mode: RwLock<PrivacyMode>,
 
-    /// Our Nym address (set after connection).
-    our_address: RwLock<Option<String>>,
+    /// Our Nym address.
+    our_address: String,
 
     /// Metrics collector.
     metrics: Arc<MetricsCollector>,
 
     /// Whether the client is connected.
-    connected: RwLock<bool>,
+    connected: Arc<AtomicBool>,
+
+    /// Set before an intentional disconnect, so the shutdown watcher
+    /// doesn't treat it as a crash.
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl NymTransport {
@@ -62,14 +70,47 @@ impl NymTransport {
         tracing::info!("Connected to Nym mixnet");
         tracing::info!("  Our address: {}", our_address);
 
+        let connected = Arc::new(AtomicBool::new(true));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        Self::watch_for_shutdown(&client, connected.clone(), shutting_down.clone());
+
         Ok(Self {
             client: Mutex::new(Some(client)),
             exit_address,
             privacy_mode: RwLock::new(privacy_mode),
-            our_address: RwLock::new(Some(our_address)),
+            our_address,
             metrics: Arc::new(MetricsCollector::new(200)),
-            connected: RwLock::new(true),
+            connected,
+            shutting_down,
         })
+    }
+
+    /// Exit the process if the Nym client shuts down unexpectedly.
+    ///
+    /// After an internal failure the SDK cancels its tasks but the process
+    /// keeps running, failing every request. Exiting non-zero lets a
+    /// supervisor (systemd, Docker) restart it instead.
+    fn watch_for_shutdown(
+        client: &nym_sdk::mixnet::MixnetClient,
+        connected: Arc<AtomicBool>,
+        shutting_down: Arc<AtomicBool>,
+    ) {
+        let token = client.cancellation_token();
+        tokio::spawn(async move {
+            token.cancelled().await;
+            connected.store(false, Ordering::SeqCst);
+            if !shutting_down.load(Ordering::SeqCst) {
+                tracing::error!("Nym client shut down unexpectedly; exiting");
+                std::process::exit(1);
+            }
+        });
+    }
+
+    fn current_mode(&self) -> PrivacyMode {
+        *self
+            .privacy_mode
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Parse a Nym recipient address from a string.
@@ -134,8 +175,7 @@ impl MixnetTransport for NymTransport {
     }
 
     fn privacy_info(&self) -> PrivacyInfo {
-        let mode = *self.privacy_mode.blocking_read();
-        let our_address = self.our_address.blocking_read().clone();
+        let mode = self.current_mode();
 
         PrivacyInfo {
             mode,
@@ -143,7 +183,7 @@ impl MixnetTransport for NymTransport {
             cover_traffic_active: mode.has_cover_traffic(),
             gateway_address: None,    // TODO: Extract from Nym client
             anonymity_set_size: None, // TODO: Query from Nym network
-            our_address,
+            our_address: Some(self.our_address.clone()),
         }
     }
 
@@ -152,7 +192,7 @@ impl MixnetTransport for NymTransport {
     }
 
     async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()> {
-        let current = *self.privacy_mode.read().await;
+        let current = self.current_mode();
         if current == mode {
             return Ok(());
         }
@@ -165,21 +205,25 @@ impl MixnetTransport for NymTransport {
 
         // For now, mode switching requires reconnecting the Nym client.
         // Future optimization: Nym SDK may support live mode switching.
-        *self.privacy_mode.write().await = mode;
+        *self
+            .privacy_mode
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
 
         tracing::info!("Privacy mode updated to {}", mode.label());
         Ok(())
     }
 
     fn is_connected(&self) -> bool {
-        *self.connected.blocking_read()
+        self.connected.load(Ordering::SeqCst)
     }
 
     async fn disconnect(&self) -> Result<()> {
         let mut guard = self.client.lock().await;
         if let Some(client) = guard.take() {
+            self.shutting_down.store(true, Ordering::SeqCst);
             client.disconnect().await;
-            *self.connected.write().await = false;
+            self.connected.store(false, Ordering::SeqCst);
             tracing::info!("Disconnected from Nym mixnet");
         }
         Ok(())
