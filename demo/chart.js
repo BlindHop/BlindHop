@@ -151,5 +151,4 @@ class LatencyChart {
     }
 }
 
-// Export for use in app.js
-window.LatencyChart = LatencyChart;
+export { LatencyChart };

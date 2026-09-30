@@ -6,6 +6,7 @@
 //
 // In browser mode, the Nym SDK runs directly in a Web Worker — no local setup needed.
 
+import { LatencyChart } from './chart.js';
 import { NymBrowserClient } from './nym-client.js';
 
 // ——— Configuration ———
@@ -579,7 +580,7 @@ window.stopQuerying = stopQuerying;
 window.updateInterval = updateInterval;
 
 document.addEventListener('DOMContentLoaded', () => {
-    chart = new window.LatencyChart('latency-chart');
+    chart = new LatencyChart('latency-chart');
     initSlider();
     initExitAddress();
 });
