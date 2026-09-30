@@ -37,7 +37,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   format:
     name: Formatting
@@ -51,4 +51,4 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --workspace -- --check
+        run: cargo fmt --all -- --check
