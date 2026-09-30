@@ -4,8 +4,9 @@
 //! the pluggable `MixnetTransport` interface for routing traffic
 //! through the Nym mixnet.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use nym_sdk::mixnet::MixnetMessageSender;
 
@@ -25,6 +26,10 @@ use blindhop_common::transport::{MixnetTransport, PrivacyInfo};
 pub struct NymTransport {
     /// The Nym mixnet client.
     client: Mutex<Option<nym_sdk::mixnet::MixnetClient>>,
+
+    /// Received payloads not yet returned by `recv()` (a batch from
+    /// `wait_for_messages()` can hold more than one message).
+    pending: StdMutex<VecDeque<Vec<u8>>>,
 
     /// Nym address of the exit service.
     exit_address: String,
@@ -76,6 +81,7 @@ impl NymTransport {
 
         Ok(Self {
             client: Mutex::new(Some(client)),
+            pending: StdMutex::new(VecDeque::new()),
             exit_address,
             privacy_mode: RwLock::new(privacy_mode),
             our_address,
@@ -152,25 +158,41 @@ impl MixnetTransport for NymTransport {
             .as_mut()
             .ok_or_else(|| BlindHopError::NymTransport("Not connected".to_string()))?;
 
-        // Wait for next message from the mixnet
-        // wait_for_messages returns Option<Vec<ReconstructedMessage>>
-        let received = client
-            .wait_for_messages()
-            .await
-            .ok_or_else(|| BlindHopError::NymTransport("Mixnet channel closed".to_string()))?;
+        // Messages left over from an earlier multi-message batch come first.
+        // Only touched while holding `self.client`, so recv order is preserved.
+        loop {
+            let queued = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front();
+            if let Some(payload) = queued {
+                return Ok(payload);
+            }
 
-        if let Some(msg) = received.into_iter().next() {
-            let mixnet_msg = MixnetMessage::from_bytes(&msg.message)?;
-            self.metrics.record_recv();
-            tracing::debug!(
-                "Received {} bytes from Nym mixnet",
-                mixnet_msg.payload.len()
-            );
-            Ok(mixnet_msg.payload)
-        } else {
-            Err(BlindHopError::NymTransport(
-                "No messages received".to_string(),
-            ))
+            // wait_for_messages can return an empty batch; keep waiting.
+            let received = client
+                .wait_for_messages()
+                .await
+                .ok_or_else(|| BlindHopError::NymTransport("Mixnet channel closed".to_string()))?;
+
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for msg in received {
+                match MixnetMessage::from_bytes(&msg.message) {
+                    Ok(mixnet_msg) => {
+                        self.metrics.record_recv();
+                        tracing::debug!(
+                            "Received {} bytes from Nym mixnet",
+                            mixnet_msg.payload.len()
+                        );
+                        pending.push_back(mixnet_msg.payload);
+                    }
+                    Err(e) => tracing::warn!("Dropping unparseable mixnet message: {}", e),
+                }
+            }
         }
     }
 
