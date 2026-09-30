@@ -1,0 +1,65 @@
+[Unit]
+Description=BlindHop exit (Nym service provider forwarding to a Substrate node)
+Documentation=https://github.com/BlindHop/BlindHop/blob/nym/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blindhop
+Group=blindhop
+
+# TARGET_RPC: the Substrate full node the exit forwards to (see install-exit.sh).
+EnvironmentFile=/etc/blindhop-exit.env
+Environment=RUST_LOG=info
+
+# Keys and state. This directory IS the exit's Nym address: keep it across
+# upgrades and back it up (backup-exit-keys.sh). systemd creates it owned by
+# the service user with mode 0700.
+StateDirectory=blindhop-exit
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/blindhop-exit
+ExecStart=/usr/local/bin/blindhop-exit --target-rpc ${TARGET_RPC} --data-dir /var/lib/blindhop-exit/keys
+
+Restart=always
+RestartSec=5
+# On SIGTERM the exit disconnects from Nym cleanly, which flushes its
+# reply-SURB store; give it time to do so.
+TimeoutStopSec=30
+
+# Resource limits (the VPS is shared). Worst case at the exit's limits is
+# ~240 MB (16 requests in flight x 4 MiB responses), so 320M leaves margin.
+MemoryMax=320M
+CPUQuota=50%
+TasksMax=512
+LimitNOFILE=4096
+
+# Hardening: the exit needs only outbound network access and its state
+# directory. It opens no listening ports.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
