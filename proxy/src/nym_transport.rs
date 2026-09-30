@@ -10,10 +10,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use nym_sdk::mixnet::{MixnetClient, MixnetClientSender, MixnetMessageSender, Recipient};
+use nym_sdk::mixnet::{
+    MixnetClient, MixnetClientBuilder, MixnetClientSender, MixnetMessageSender, Recipient,
+};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
@@ -54,11 +56,9 @@ pub struct NymTransport {
     /// Background task that owns the client and routes replies.
     receiver_task: Mutex<Option<JoinHandle<()>>>,
 
-    /// Current privacy mode.
-    ///
-    /// A `std` lock (never held across `.await`) so sync trait methods can
-    /// read it without `blocking_read()`, which panics inside the runtime.
-    privacy_mode: RwLock<PrivacyMode>,
+    /// Privacy mode the client was built for. Fixed for the client's
+    /// lifetime; switching modes reconnects (see `ActiveTransport`).
+    privacy_mode: PrivacyMode,
 
     /// Our Nym address.
     our_address: String,
@@ -90,7 +90,11 @@ impl NymTransport {
             privacy_mode.label()
         );
 
-        let client = MixnetClient::connect_new()
+        let client = MixnetClientBuilder::new_ephemeral()
+            .debug_config(client_config(privacy_mode))
+            .build()
+            .map_err(|e| BlindHopError::NymTransport(format!("Failed to build client: {}", e)))?
+            .connect_to_mixnet()
             .await
             .map_err(|e| BlindHopError::NymTransport(format!("Failed to connect: {}", e)))?;
 
@@ -121,7 +125,7 @@ impl NymTransport {
             next_id: AtomicU64::new(1),
             shutdown: Mutex::new(Some(shutdown_tx)),
             receiver_task: Mutex::new(Some(receiver_task)),
-            privacy_mode: RwLock::new(privacy_mode),
+            privacy_mode,
             our_address,
             metrics,
             connected,
@@ -151,11 +155,26 @@ impl NymTransport {
     }
 
     fn current_mode(&self) -> PrivacyMode {
-        *self
-            .privacy_mode
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.privacy_mode
     }
+}
+
+/// Nym client settings that make each privacy mode what the UI says it is.
+///
+/// - Full: SDK defaults. Entry gateway, three mix nodes, exit gateway
+///   (5 hops), with loop cover traffic and Poisson-delayed sending.
+/// - Fast: entry gateway straight to exit gateway (2 hops), skipping the mix
+///   nodes. This also applies to the reply SURBs handed to the exit, so
+///   replies skip them too. No cover traffic or Poisson delays: lower
+///   latency, weaker resistance to traffic analysis.
+fn client_config(mode: PrivacyMode) -> nym_sdk::DebugConfig {
+    let mut config = nym_sdk::DebugConfig::default();
+    if mode == PrivacyMode::Fast {
+        config.traffic.disable_mix_hops = true;
+        config.cover_traffic.disable_loop_cover_traffic_stream = true;
+        config.traffic.disable_main_poisson_packet_distribution = true;
+    }
+    config
 }
 
 /// Owns the client's receive side: routes each reply to the request with
@@ -301,29 +320,6 @@ impl MixnetTransport for NymTransport {
         self.metrics.snapshot()
     }
 
-    async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()> {
-        let current = self.current_mode();
-        if current == mode {
-            return Ok(());
-        }
-
-        tracing::info!(
-            "Switching privacy mode: {} → {}",
-            current.label(),
-            mode.label()
-        );
-
-        // For now, mode switching requires reconnecting the Nym client.
-        // Future optimization: Nym SDK may support live mode switching.
-        *self
-            .privacy_mode
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
-
-        tracing::info!("Privacy mode updated to {}", mode.label());
-        Ok(())
-    }
-
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
     }
@@ -392,6 +388,22 @@ mod tests {
 
         assert!(rx.try_recv().is_err(), "waiter must still be pending");
         assert_eq!(lock(&pending).len(), 1);
+    }
+
+    #[test]
+    fn fast_mode_skips_mix_nodes_and_cover_traffic() {
+        let fast = client_config(PrivacyMode::Fast);
+        assert!(fast.traffic.disable_mix_hops);
+        assert!(fast.cover_traffic.disable_loop_cover_traffic_stream);
+        assert!(fast.traffic.disable_main_poisson_packet_distribution);
+    }
+
+    #[test]
+    fn full_mode_uses_mix_nodes_and_cover_traffic() {
+        let full = client_config(PrivacyMode::Full);
+        assert!(!full.traffic.disable_mix_hops);
+        assert!(!full.cover_traffic.disable_loop_cover_traffic_stream);
+        assert!(!full.traffic.disable_main_poisson_packet_distribution);
     }
 
     #[test]

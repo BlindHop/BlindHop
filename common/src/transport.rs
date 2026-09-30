@@ -76,12 +76,6 @@ pub trait MixnetTransport: Send + Sync {
     /// Get current transport performance metrics.
     fn metrics(&self) -> TransportMetrics;
 
-    /// Switch privacy mode at runtime.
-    ///
-    /// This may involve reconnecting to the Nym network with different
-    /// parameters (e.g., switching from 2-hop to 5-hop mode).
-    async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()>;
-
     /// Check if the transport is currently connected and operational.
     fn is_connected(&self) -> bool;
 

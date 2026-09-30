@@ -44,7 +44,8 @@ struct Cli {
     #[arg(long, default_value = "full")]
     privacy_mode: String,
 
-    /// Exit backend type: service-provider or socks5.
+    /// Exit backend type: service-provider. (socks5 is not implemented yet
+    /// and is refused at startup.)
     #[arg(long, default_value = "service-provider")]
     exit_backend: String,
 
@@ -106,6 +107,10 @@ async fn main() -> Result<()> {
 
     let privacy_mode = cli.privacy_mode();
     let exit_backend = cli.exit_backend();
+    if exit_backend == ExitBackendType::Socks5 {
+        // Fail rather than silently use a different backend than requested.
+        anyhow::bail!("The socks5 exit backend is not implemented yet; use service-provider");
+    }
 
     let config = blindhop_common::config::BlindHopConfig {
         listen_addr: cli.listen,
