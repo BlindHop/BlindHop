@@ -27,6 +27,8 @@ docs/.docusaurus/
 # Nym runtime
 .exit_nym_address
 .nym/
+# Exit service keys (private)
+.blindhop-exit/
 
 # Demo build output
 demo/dist/

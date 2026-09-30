@@ -18,6 +18,8 @@ mod backend;
 mod service;
 mod substrate_rpc;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 
@@ -31,6 +33,11 @@ struct Cli {
     /// Target Substrate full node WebSocket URL.
     #[arg(long, default_value = "wss://sys.turboflakes.io/asset-hub-paseo")]
     target_rpc: String,
+
+    /// Directory for the exit's Nym keys and state. Keeping it across
+    /// restarts keeps the exit's Nym address stable.
+    #[arg(long, default_value = ".blindhop-exit")]
+    data_dir: PathBuf,
 
     /// Log level.
     #[arg(long, default_value = "info")]
@@ -50,7 +57,8 @@ async fn main() -> Result<()> {
 
     tracing::info!("Starting BlindHop Exit Service");
     tracing::info!("  Target RPC: {}", cli.target_rpc);
+    tracing::info!("  Data dir:   {}", cli.data_dir.display());
 
     // Start the Nym service provider
-    service::run_exit_service(&cli.target_rpc).await
+    service::run_exit_service(&cli.target_rpc, &cli.data_dir).await
 }

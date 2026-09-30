@@ -116,6 +116,8 @@ cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-pa
 
 This prints the exit's Nym address and saves it to `.exit_nym_address`.
 
+The exit's Nym keys live in `.blindhop-exit/` (override with `--data-dir`). Keep that directory across restarts and redeploys, and back it up: it is what keeps the exit's address stable. Deleting it gives the exit a new address, and every proxy and demo user must be reconfigured.
+
 #### Run the Proxy
 
 On the user's machine:
