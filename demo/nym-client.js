@@ -3,12 +3,24 @@
 // Wraps @nymproject/sdk-full-fat to provide a simple interface for
 // sending JSON-RPC requests through the Nym mixnet from the browser.
 //
-// Wire format matches blindhop-exit's MixnetMessage:
-//   { "payload": [u8 array], "msg_type": "Request" | "Response" }
+// Requests and replies are BlindHop frames (see frame.js). They are sent
+// with rawSend (no SDK mime-type framing) and read from the raw message
+// event, since the exit replies with raw bytes.
 
 import { createNymMixnetClient } from '@nymproject/sdk-full-fat';
+import { FRAME_TYPE_REQUEST, FRAME_TYPE_RESPONSE, encodeFrame, decodeFrame } from './frame.js';
 
 const NYM_API_URL = 'https://validator.nymtech.net/api';
+
+// Reply SURBs attached to each request. Large replies need more; the exit
+// requests top-ups as needed, so this only has to cover small replies.
+const REPLY_SURBS = 10;
+
+// Give up on a reply after this long, matching blindhop-proxy.
+const REQUEST_TIMEOUT_MS = 60_000;
+
+// Give up on connecting to the mixnet after this long.
+const CONNECT_TIMEOUT_MS = 60_000;
 
 /**
  * Browser-based Nym mixnet client for BlindHop.
@@ -28,6 +40,10 @@ export class NymBrowserClient {
         this._onResponse = null;
         this._onStatusChange = null;
         this._connected = false;
+        this._unsubscribe = null;
+        this._nextId = 1;
+        // correlation ID -> timeout handle, for requests awaiting a reply
+        this._pending = new Map();
     }
 
     /**
@@ -42,28 +58,47 @@ export class NymBrowserClient {
 
         this._nym = await createNymMixnetClient();
 
-        // Subscribe to incoming messages (SURB replies from exit service)
-        this._nym.events.subscribeToTextMessageReceivedEvent((event) => {
+        // Raw event: the exit's replies carry no SDK mime-type framing, so the
+        // text/binary events never fire for them.
+        this._unsubscribe = this._nym.events.subscribeToRawMessageReceivedEvent((event) => {
             this._handleIncoming(event.args.payload);
         });
 
         this._setStatus('connecting', 'Connecting to Nym gateway...');
 
-        await this._nym.client.start({
-            clientId: `blindhop-browser-${Date.now()}`,
-            nymApiUrl: NYM_API_URL,
+        // start() resolves before the client is connected; anything sent
+        // before the Connected event is silently dropped.
+        let unsubscribeConnected;
+        let timer;
+        const connected = new Promise((resolve, reject) => {
+            unsubscribeConnected = this._nym.events.subscribeToConnected((event) => {
+                resolve(event.args.address);
+            });
+            timer = setTimeout(
+                () => reject(new Error(`Nym client did not connect within ${CONNECT_TIMEOUT_MS / 1000}s`)),
+                CONNECT_TIMEOUT_MS,
+            );
         });
 
-        this._selfAddress = this._nym.client.selfAddress();
+        try {
+            await this._nym.client.start({
+                clientId: `blindhop-browser-${Date.now()}`,
+                nymApiUrl: NYM_API_URL,
+            });
+            this._selfAddress = await connected;
+        } finally {
+            clearTimeout(timer);
+            unsubscribeConnected();
+        }
         this._connected = true;
-        this._setStatus('connected', `Nym connected (${this._selfAddress.slice(0, 16)}...)`);
+        this._setStatus('connected', `Nym connected (${String(this._selfAddress).slice(0, 16)}...)`);
 
         return this._selfAddress;
     }
 
     /**
      * Send a JSON-RPC request through the Nym mixnet to the exit service.
-     * The request is wrapped in a MixnetMessage envelope matching the Rust struct.
+     * The reply is delivered to the onResponse callback.
      * @param {string} jsonRpcString - Serialized JSON-RPC request.
      */
     async sendRequest(jsonRpcString) {
@@ -71,18 +106,25 @@ export class NymBrowserClient {
             throw new Error('Nym client not connected');
         }
 
-        // Build MixnetMessage envelope matching blindhop-exit's serde format:
-        //   { "payload": [byte array], "msg_type": "Request" }
-        const payloadBytes = Array.from(new TextEncoder().encode(jsonRpcString));
-        const envelope = JSON.stringify({
-            payload: payloadBytes,
-            msg_type: 'Request',
-        });
+        const id = this._nextId++;
+        const frame = encodeFrame(FRAME_TYPE_REQUEST, id, new TextEncoder().encode(jsonRpcString));
 
-        await this._nym.client.send({
-            payload: envelope,
-            recipient: this._exitAddress,
-        });
+        this._pending.set(id, setTimeout(() => {
+            this._pending.delete(id);
+            console.warn(`[NymBrowser] No reply for request ${id} within ${REQUEST_TIMEOUT_MS / 1000}s`);
+        }, REQUEST_TIMEOUT_MS));
+
+        try {
+            await this._nym.client.rawSend({
+                payload: frame,
+                recipient: this._exitAddress,
+                replySurbs: REPLY_SURBS,
+            });
+        } catch (e) {
+            clearTimeout(this._pending.get(id));
+            this._pending.delete(id);
+            throw e;
+        }
     }
 
     /**
@@ -106,6 +148,12 @@ export class NymBrowserClient {
      * Disconnect from the Nym mixnet.
      */
     async disconnect() {
+        for (const timer of this._pending.values()) clearTimeout(timer);
+        this._pending.clear();
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
         if (this._nym) {
             try {
                 await this._nym.client.stop();
@@ -133,26 +181,30 @@ export class NymBrowserClient {
 
     /**
      * Handle an incoming message from the Nym mixnet (SURB reply from exit).
-     * Unwraps the MixnetMessage envelope and fires the response callback.
+     * Decodes the frame, matches it to a pending request, and fires the
+     * response callback.
      */
-    _handleIncoming(rawPayload) {
-        try {
-            const envelope = JSON.parse(rawPayload);
+    _handleIncoming(bytes) {
+        const frame = decodeFrame(bytes);
+        if (!frame) {
+            console.warn('[NymBrowser] Ignoring message that is not a BlindHop frame');
+            return;
+        }
+        if (frame.type !== FRAME_TYPE_RESPONSE) {
+            console.warn('[NymBrowser] Ignoring non-response frame');
+            return;
+        }
 
-            // Validate it's a response
-            if (envelope.msg_type !== 'Response') {
-                console.warn('[NymBrowser] Unexpected msg_type:', envelope.msg_type);
-                return;
-            }
+        const timer = this._pending.get(frame.correlationId);
+        if (timer === undefined) {
+            console.warn(`[NymBrowser] Dropping reply with unknown correlation ID ${frame.correlationId} (timed out or duplicate)`);
+            return;
+        }
+        clearTimeout(timer);
+        this._pending.delete(frame.correlationId);
 
-            // Decode payload bytes back to JSON-RPC string
-            const jsonRpcString = new TextDecoder().decode(new Uint8Array(envelope.payload));
-
-            if (this._onResponse) {
-                this._onResponse(jsonRpcString);
-            }
-        } catch (e) {
-            console.error('[NymBrowser] Failed to parse incoming message:', e);
+        if (this._onResponse) {
+            this._onResponse(new TextDecoder().decode(frame.payload));
         }
     }
 
