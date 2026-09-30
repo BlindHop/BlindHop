@@ -52,3 +52,23 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Known, reviewed exceptions live in .cargo/audit.toml; anything else fails.
+      - name: Audit Rust dependencies
+        run: cargo audit
+
+      - name: Audit demo dependencies
+        working-directory: demo
+        run: npm audit --package-lock-only --audit-level=moderate

@@ -1,0 +1,30 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec).
+#
+# Each ignored advisory below comes in through nym-sdk 1.21.6 (the latest
+# release as of 2026-09-30) and has no semver-compatible fix we can apply.
+# Any advisory NOT listed here fails CI. Re-check this list whenever nym-sdk
+# is upgraded, and remove entries as soon as a fix is available.
+
+[advisories]
+ignore = [
+    # rsa 0.9.10, Marvin timing attack on RSA private-key operations.
+    # Path: nym-crypto -> jwt-simple -> superboring -> rsa. nym-crypto uses
+    # jwt-simple only for Ed25519 keys; no RSA private-key operation runs.
+    # No fixed rsa release exists.
+    "RUSTSEC-2023-0071",
+
+    # h2 0.3.27, unbounded empty DATA frames (a malicious server can cause
+    # excess CPU use). Path: nym-validator-client / cosmrs -> tendermint-rpc
+    # -> reqwest 0.11 -> hyper 0.14 -> h2 0.3. Reached only on HTTPS requests
+    # to Nyx chain validators. Fix exists only in h2 0.4.
+    "RUSTSEC-2026-0258",
+
+    # rustls-webpki 0.101.7 (via rustls 0.21 in the same reqwest 0.11 stack).
+    # 0098/0099: name constraints wrongly accepted. Exploiting them needs a
+    # certificate issued under a name-constrained intermediate CA.
+    # 0104: panic parsing a CRL. reqwest/rustls 0.21 load no CRLs here.
+    # Fixes exist only in rustls-webpki 0.103+.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
