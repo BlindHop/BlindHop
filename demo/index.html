@@ -176,6 +176,12 @@
                     </select>
                 </label>
             </div>
+            <div class="control-info">
+                <label title="Also sends each query straight to the RPC node from your own IP address, so the node can see who you are. Off by default.">
+                    <input type="checkbox" id="compare-direct" onchange="toggleCompareDirect(this.checked)">
+                    Compare with direct connection (reveals your IP)
+                </label>
+            </div>
         </div>
 
         <footer>

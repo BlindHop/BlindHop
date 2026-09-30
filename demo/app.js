@@ -74,6 +74,9 @@ let metrics = {
 };
 
 let directLatencies = [];
+// Also query the RPC node directly, for the latency comparison. Off by
+// default: it sends the same queries from the user's own IP address.
+let compareDirect = false;
 
 // ——— Auto-Detection ———
 
@@ -194,6 +197,8 @@ function renderPrivacyMode(mode) {
     const ipValue = document.getElementById('ip-visibility');
     ipRow.className = 'stat-row ip-row ' + (info.ipExposed ? 'exposed' : 'hidden');
     ipValue.textContent = info.ipLabel;
+
+    syncDirectConnection();
 }
 
 /**
@@ -298,17 +303,21 @@ function connectProxy() {
 function connectDirect() {
     return new Promise((resolve, reject) => {
         try {
-            directWs = new WebSocket(CONFIG.directTarget);
-            directWs.onopen = () => {
+            const ws = new WebSocket(CONFIG.directTarget);
+            directWs = ws;
+            ws.onopen = () => {
                 console.log('[Direct] Connected');
                 resolve();
             };
-            directWs.onmessage = (event) => handleResponse('direct', event.data);
-            directWs.onerror = (e) => {
+            ws.onmessage = (event) => handleResponse('direct', event.data);
+            ws.onerror = (e) => {
                 console.error('[Direct] Error:', e);
                 reject(e);
             };
-            directWs.onclose = () => console.log('[Direct] Disconnected');
+            ws.onclose = () => {
+                console.log('[Direct] Disconnected');
+                if (directWs === ws) directWs = null;
+            };
         } catch (e) {
             reject(e);
         }
@@ -442,6 +451,27 @@ function handleResponse(source, data) {
 
 // ——— Query Loop ———
 
+/**
+ * Open or close the direct connection to the RPC node so it exists only
+ * while it's needed: in Direct mode, or when the user opted into the
+ * latency comparison. Otherwise the node never sees the user's IP.
+ */
+function syncDirectConnection() {
+    const running = queryTimer !== null;
+    const needed = running && (currentMode === 'none' || compareDirect);
+    if (needed && !directWs) {
+        connectDirect().catch((e) => console.warn('[Direct] Could not connect:', e?.message || e));
+    } else if (!needed && directWs) {
+        directWs.close();
+        directWs = null;
+    }
+}
+
+function toggleCompareDirect(enabled) {
+    compareDirect = enabled;
+    syncDirectConnection();
+}
+
 function queryAll() {
     if (currentMode === 'none') {
         // Direct mode — query Substrate directly
@@ -458,8 +488,8 @@ function queryAll() {
         sendViaNym('chain_getHeader', []);
     }
 
-    // Always query direct for overhead comparison (if not in none mode)
-    if (currentMode !== 'none' && directWs && directWs.readyState === WebSocket.OPEN) {
+    // Direct comparison only if the user opted in (it reveals their IP).
+    if (compareDirect && currentMode !== 'none' && directWs && directWs.readyState === WebSocket.OPEN) {
         sendRpc(directWs, 'chain_getHeader', [], 'direct');
     }
 }
@@ -478,13 +508,16 @@ async function startQuerying() {
         updateConnectionMode(connectionMode);
         updateSliderForMode(connectionMode);
 
-        // Step 2: Connect direct (for baseline)
-        startBtn.textContent = '⏳ Connecting direct...';
-        try {
-            await connectDirect();
-            sendRpc(directWs, 'system_chain', [], 'direct');
-        } catch (e) {
-            console.warn('[Direct] Could not connect for baseline:', e.message);
+        // Step 2: Connect direct only when needed: Direct mode, or the
+        // user opted into the comparison. It reveals the user's IP.
+        if (currentMode === 'none' || compareDirect) {
+            startBtn.textContent = '⏳ Connecting direct...';
+            try {
+                await connectDirect();
+                sendRpc(directWs, 'system_chain', [], 'direct');
+            } catch (e) {
+                console.warn('[Direct] Could not connect:', e?.message || e);
+            }
         }
 
         // Step 3: Connect via detected mode
@@ -507,14 +540,13 @@ async function startQuerying() {
                 const nymStatus = document.getElementById('nym-status');
                 if (nymStatus) nymStatus.textContent = `Error: ${e.message}`;
 
-                // Fall back to direct-only
-                if (!directWs || directWs.readyState !== WebSocket.OPEN) {
-                    startBtn.disabled = false;
-                    startBtn.textContent = '▶ Start Querying';
-                    startBtn.classList.remove('connecting');
-                    return;
-                }
-                setPrivacyMode('none');
+                // Fail closed: never fall back to direct, which would expose
+                // the user's IP without them choosing it.
+                if (directWs) { directWs.close(); directWs = null; }
+                startBtn.disabled = false;
+                startBtn.textContent = '▶ Start Querying';
+                startBtn.classList.remove('connecting');
+                return;
             }
         }
 
@@ -522,8 +554,9 @@ async function startQuerying() {
         startBtn.classList.remove('connecting');
         stopBtn.disabled = false;
 
-        queryAll();
         queryTimer = setInterval(queryAll, CONFIG.queryInterval);
+        syncDirectConnection();
+        queryAll();
     } catch (e) {
         startBtn.disabled = false;
         startBtn.textContent = '▶ Start Querying';
@@ -636,6 +669,7 @@ function initExitAddress() {
 window.startQuerying = startQuerying;
 window.stopQuerying = stopQuerying;
 window.updateInterval = updateInterval;
+window.toggleCompareDirect = toggleCompareDirect;
 
 document.addEventListener('DOMContentLoaded', () => {
     chart = new LatencyChart('latency-chart');
