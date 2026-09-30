@@ -1,14 +1,20 @@
 //! Nym Service Provider — listens for mixnet messages and processes them.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use nym_sdk::mixnet::{MixnetClient, MixnetClientBuilder, MixnetMessageSender, StoragePaths};
+use nym_sdk::mixnet::{
+    AnonymousSenderTag, MixnetClient, MixnetClientBuilder, MixnetClientSender, MixnetMessageSender,
+    StoragePaths,
+};
 
 use blindhop_common::rpc::{MessageType, MixnetMessage};
 
 use crate::backend::{ExitBackend, SubstrateWsBackend};
+use crate::limiter::{Limiter, MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT};
+use crate::policy;
 
 /// Run the exit service as a Nym Service Provider.
 ///
@@ -30,7 +36,9 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
     }
 
     // Initialize the Substrate RPC backend
-    let backend = SubstrateWsBackend::new(target_rpc.to_string());
+    let backend = Arc::new(SubstrateWsBackend::new(target_rpc.to_string()));
+    let sender = client.split_sender();
+    let limiter = Limiter::new(MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT);
     tracing::info!(
         "Exit service ready — forwarding to {} via {} backend",
         target_rpc,
@@ -61,59 +69,78 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
         };
 
         for received in messages {
-            let sender = received.sender_tag;
-
-            match MixnetMessage::from_bytes(&received.message) {
-                Ok(msg) => {
-                    if msg.msg_type != MessageType::Request {
-                        tracing::debug!("Skipping non-request message");
-                        continue;
-                    }
-
-                    tracing::debug!("Received request ({} bytes) from mixnet", msg.payload.len());
-
-                    // Forward to Substrate full node
-                    match backend.forward_rpc(&msg.payload).await {
-                        Ok(response) => {
-                            // Wrap response in MixnetMessage
-                            let reply = MixnetMessage::response(msg.correlation_id, response);
-                            let reply_bytes = reply.to_bytes();
-
-                            // Send back through the mixnet using sender tag (SURB reply)
-                            if let Some(tag) = sender {
-                                if let Err(e) = client.send_reply(tag, reply_bytes).await {
-                                    tracing::warn!("Failed to send reply through mixnet: {}", e);
-                                }
-                            } else {
-                                tracing::warn!("No sender tag — cannot send reply");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Substrate RPC forward failed: {}", e);
-                            // Send error response back
-                            let error_json = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": null,
-                                "error": {
-                                    "code": -32000,
-                                    "message": format!("Exit service error: {}", e)
-                                }
-                            });
-                            let reply = MixnetMessage::response(
-                                msg.correlation_id,
-                                serde_json::to_vec(&error_json).unwrap(),
-                            );
-                            if let Some(tag) = sender {
-                                let _ = client.send_reply(tag, reply.to_bytes()).await;
-                            }
-                        }
-                    }
+            // Replies travel on the sender's reply SURBs; without a tag there
+            // is no way to answer, so don't spend any work on the message.
+            let Some(tag) = received.sender_tag else {
+                tracing::debug!("Dropping message without reply SURBs");
+                continue;
+            };
+            let msg = match MixnetMessage::from_bytes(&received.message) {
+                Ok(msg) if msg.msg_type == MessageType::Request => msg,
+                Ok(_) => {
+                    tracing::debug!("Skipping non-request message");
+                    continue;
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse MixnetMessage: {}", e);
+                    continue;
                 }
-            }
+            };
+            tracing::debug!("Received request ({} bytes) from mixnet", msg.payload.len());
+
+            let sender = sender.clone();
+            let Some(permit) = limiter.try_acquire(tag) else {
+                tracing::warn!("Exit busy; refusing a request");
+                let reply = policy::error_reply(
+                    &policy::request_id(&msg.payload),
+                    policy::code::BUSY,
+                    "Exit is busy; retry shortly",
+                );
+                tokio::spawn(send_reply(sender, tag, msg.correlation_id, reply));
+                continue;
+            };
+
+            // Each request runs on its own task, so a slow one (e.g. a large
+            // state_getMetadata) doesn't hold up everyone else.
+            let backend = backend.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let reply = handle_request(backend.as_ref(), &msg.payload).await;
+                send_reply(sender, tag, msg.correlation_id, reply).await;
+            });
         }
+    }
+}
+
+/// Validate a request against the exit's policy, forward it, and build the
+/// reply payload. Errors carry the request's `id`.
+async fn handle_request<B: ExitBackend + ?Sized>(backend: &B, payload: &[u8]) -> Vec<u8> {
+    let request = match policy::validate(payload) {
+        Ok(request) => request,
+        Err(reply) => {
+            tracing::debug!("Refused a request that failed policy checks");
+            return reply;
+        }
+    };
+    match backend.forward_rpc(payload, &request.id).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!("Upstream request failed: {}", e);
+            policy::error_reply(&request.id, policy::code::UPSTREAM_ERROR, &e.to_string())
+        }
+    }
+}
+
+/// Send `payload` back to the client behind `tag` via its reply SURBs.
+async fn send_reply(
+    sender: MixnetClientSender,
+    tag: AnonymousSenderTag,
+    correlation_id: u64,
+    payload: Vec<u8>,
+) {
+    let bytes = MixnetMessage::response(correlation_id, payload).to_bytes();
+    if let Err(e) = sender.send_reply(tag, bytes).await {
+        tracing::warn!("Failed to send reply through mixnet: {}", e);
     }
 }
 
@@ -183,4 +210,76 @@ async fn shutdown_signal() {
         }
     }
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use blindhop_common::error::{BlindHopError, Result as BhResult};
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Backend that counts calls and answers or fails on demand.
+    struct FakeBackend {
+        calls: AtomicUsize,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ExitBackend for FakeBackend {
+        async fn forward_rpc(&self, _request: &[u8], id: &Value) -> BhResult<Vec<u8>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(BlindHopError::SubstrateRpc("node down".into()));
+            }
+            Ok(serde_json::to_vec(
+                &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": "ok" }),
+            )
+            .unwrap())
+        }
+        fn backend_type(&self) -> &str {
+            "fake"
+        }
+    }
+
+    fn backend(fail: bool) -> FakeBackend {
+        FakeBackend {
+            calls: AtomicUsize::new(0),
+            fail,
+        }
+    }
+
+    async fn run(backend: &FakeBackend, payload: &str) -> Value {
+        serde_json::from_slice(&handle_request(backend, payload.as_bytes()).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn allowed_request_is_forwarded() {
+        let b = backend(false);
+        let r = run(&b, r#"{"jsonrpc":"2.0","id":4,"method":"system_chain"}"#).await;
+        assert_eq!(r["result"], "ok");
+        assert_eq!(b.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refused_requests_never_reach_the_node() {
+        let b = backend(false);
+        for payload in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"author_insertKey","params":[]}"#,
+            r#"[{"jsonrpc":"2.0","id":1,"method":"system_chain"}]"#,
+            r#"{"jsonrpc":"2.0","method":"system_chain"}"#,
+        ] {
+            assert!(run(&b, payload).await.get("error").is_some(), "{payload}");
+        }
+        assert_eq!(b.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_is_an_error_with_the_request_id() {
+        let b = backend(true);
+        let r = run(&b, r#"{"jsonrpc":"2.0","id":"q1","method":"system_chain"}"#).await;
+        assert_eq!(r["id"], "q1");
+        assert_eq!(r["error"]["code"], policy::code::UPSTREAM_ERROR);
+    }
 }

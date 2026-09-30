@@ -15,6 +15,8 @@
 //! 5. Wraps the response in a MixnetMessage and sends back through Nym
 
 mod backend;
+mod limiter;
+mod policy;
 mod service;
 mod substrate_rpc;
 

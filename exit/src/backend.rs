@@ -6,10 +6,11 @@
 //! - Future: `Socks5Backend` for routing through Nym's exit infrastructure
 
 use async_trait::async_trait;
+use serde_json::Value;
 
-use blindhop_common::error::Result;
+use blindhop_common::error::{BlindHopError, Result};
 
-use crate::substrate_rpc;
+use crate::substrate_rpc::UpstreamPool;
 
 /// Trait for exit service backends.
 ///
@@ -17,8 +18,8 @@ use crate::substrate_rpc;
 /// to the target Substrate full node.
 #[async_trait]
 pub trait ExitBackend: Send + Sync {
-    /// Forward a JSON-RPC request and return the response.
-    async fn forward_rpc(&self, request: &[u8]) -> Result<Vec<u8>>;
+    /// Forward a JSON-RPC request whose `id` is `id` and return the response.
+    async fn forward_rpc(&self, request: &[u8], id: &Value) -> Result<Vec<u8>>;
 
     /// Get the backend type name.
     fn backend_type(&self) -> &str;
@@ -26,20 +27,25 @@ pub trait ExitBackend: Send + Sync {
 
 /// WebSocket backend connecting directly to a Substrate full node.
 pub struct SubstrateWsBackend {
-    target_url: String,
+    pool: UpstreamPool,
 }
 
 impl SubstrateWsBackend {
     /// Create a new backend targeting the given Substrate full node URL.
     pub fn new(target_url: String) -> Self {
-        Self { target_url }
+        Self {
+            pool: UpstreamPool::new(target_url),
+        }
     }
 }
 
 #[async_trait]
 impl ExitBackend for SubstrateWsBackend {
-    async fn forward_rpc(&self, request: &[u8]) -> Result<Vec<u8>> {
-        substrate_rpc::forward_rpc_message(request, &self.target_url).await
+    async fn forward_rpc(&self, request: &[u8], id: &Value) -> Result<Vec<u8>> {
+        self.pool
+            .request(request, id)
+            .await
+            .map_err(|e| BlindHopError::SubstrateRpc(e.to_string()))
     }
 
     fn backend_type(&self) -> &str {
