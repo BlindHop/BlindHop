@@ -128,12 +128,28 @@ async fn connect_persistent(data_dir: &Path) -> Result<MixnetClient> {
     MixnetClientBuilder::new_with_default_storage(storage_paths)
         .await
         .context("Failed to open Nym client storage")?
+        .debug_config(debug_config())
         .build()
         .context("Failed to build Nym client")?
         .connect_to_mixnet()
         .await
         .context("Failed to connect to Nym mixnet")
 }
+
+/// Nym client settings for the exit.
+///
+/// Every reply packet uses one reply SURB supplied by the proxy. A ~1 MB
+/// response is several hundred packets; with the SDK default of at most 50
+/// SURBs per top-up request, large replies took ~60 s and hit the proxy's
+/// timeout. 500 is the most a client allows by default
+/// (`maximum_allowed_reply_surb_request_size`).
+fn debug_config() -> nym_sdk::DebugConfig {
+    let mut config = nym_sdk::DebugConfig::default();
+    config.reply_surbs.maximum_reply_surb_request_size = MAX_REPLY_SURB_REQUEST;
+    config
+}
+
+const MAX_REPLY_SURB_REQUEST: u32 = 500;
 
 /// Create `dir` if needed, readable only by the owner (it holds private keys).
 fn create_private_dir(dir: &Path) -> Result<()> {

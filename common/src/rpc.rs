@@ -118,16 +118,59 @@ impl MixnetMessage {
     }
 
     /// Serialize to bytes for transmission through the mixnet.
+    ///
+    /// Wire format: `[type: u8][correlation_id: u64 big-endian][payload]`,
+    /// with type `0x01` = request, `0x02` = response. Every mixnet packet
+    /// costs a reply SURB, so the payload is sent as-is; the older JSON
+    /// envelope encoded each byte as a decimal number, about 3.5× larger.
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("MixnetMessage serialization should not fail")
+        let mut out = Vec::with_capacity(FRAME_HEADER_LEN + self.payload.len());
+        out.push(match self.msg_type {
+            MessageType::Request => FRAME_TYPE_REQUEST,
+            MessageType::Response => FRAME_TYPE_RESPONSE,
+        });
+        out.extend_from_slice(&self.correlation_id.to_be_bytes());
+        out.extend_from_slice(&self.payload);
+        out
     }
 
     /// Deserialize from bytes received from the mixnet.
+    ///
+    /// Also accepts the older JSON envelope (`{"payload":[..],"msg_type":..}`),
+    /// which starts with `{` and so can't be mistaken for a binary frame.
     pub fn from_bytes(data: &[u8]) -> crate::error::Result<Self> {
-        serde_json::from_slice(data)
-            .map_err(|e| crate::error::BlindHopError::JsonRpc(e.to_string()))
+        let invalid = |msg: String| crate::error::BlindHopError::JsonRpc(msg);
+
+        if data.first() == Some(&b'{') {
+            return serde_json::from_slice(data).map_err(|e| invalid(e.to_string()));
+        }
+        if data.len() < FRAME_HEADER_LEN {
+            return Err(invalid(format!(
+                "Mixnet frame too short: {} bytes",
+                data.len()
+            )));
+        }
+
+        let msg_type = match data[0] {
+            FRAME_TYPE_REQUEST => MessageType::Request,
+            FRAME_TYPE_RESPONSE => MessageType::Response,
+            other => return Err(invalid(format!("Unknown mixnet frame type {other:#04x}"))),
+        };
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&data[1..FRAME_HEADER_LEN]);
+
+        Ok(Self {
+            payload: data[FRAME_HEADER_LEN..].to_vec(),
+            msg_type,
+            correlation_id: u64::from_be_bytes(id),
+        })
     }
 }
+
+const FRAME_TYPE_REQUEST: u8 = 0x01;
+const FRAME_TYPE_RESPONSE: u8 = 0x02;
+/// Type byte + 8-byte correlation ID.
+const FRAME_HEADER_LEN: usize = 9;
 
 #[cfg(test)]
 mod tests {
@@ -162,6 +205,45 @@ mod tests {
         assert_eq!(parsed.payload, b"hello");
         assert_eq!(parsed.msg_type, MessageType::Request);
         assert_eq!(parsed.correlation_id, 42);
+    }
+
+    #[test]
+    fn test_mixnet_frame_layout() {
+        let bytes = MixnetMessage::response(0x0102030405060708, b"{}".to_vec()).to_bytes();
+        assert_eq!(bytes, [0x02, 1, 2, 3, 4, 5, 6, 7, 8, b'{', b'}']);
+
+        let parsed = MixnetMessage::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.msg_type, MessageType::Response);
+        assert_eq!(parsed.correlation_id, 0x0102030405060708);
+        assert_eq!(parsed.payload, b"{}");
+    }
+
+    #[test]
+    fn test_mixnet_frame_empty_payload() {
+        let bytes = MixnetMessage::request(7, vec![]).to_bytes();
+        assert_eq!(bytes.len(), FRAME_HEADER_LEN);
+        assert!(
+            MixnetMessage::from_bytes(&bytes)
+                .unwrap()
+                .payload
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_mixnet_frame_rejects_malformed() {
+        assert!(MixnetMessage::from_bytes(b"").is_err());
+        assert!(MixnetMessage::from_bytes(&[0x01, 0, 0]).is_err());
+        assert!(MixnetMessage::from_bytes(&[0x7F, 0, 0, 0, 0, 0, 0, 0, 1]).is_err());
+    }
+
+    #[test]
+    fn test_legacy_json_envelope_still_parses() {
+        let json = r#"{"payload":[104,105],"msg_type":"Response","correlation_id":9}"#;
+        let parsed = MixnetMessage::from_bytes(json.as_bytes()).unwrap();
+        assert_eq!(parsed.payload, b"hi");
+        assert_eq!(parsed.msg_type, MessageType::Response);
+        assert_eq!(parsed.correlation_id, 9);
     }
 
     #[test]
