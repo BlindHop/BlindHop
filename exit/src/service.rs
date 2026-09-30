@@ -48,6 +48,11 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
+    // Fires if the SDK shuts the client down after an internal failure. The
+    // message channel isn't guaranteed to close then, so without this the
+    // process could stay up but dead, and systemd would never restart it.
+    let client_failed = client.cancellation_token();
+
     // Main message processing loop
     loop {
         let messages = tokio::select! {
@@ -57,6 +62,10 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
                 tracing::info!("Shutdown signal received; disconnecting from Nym mixnet");
                 client.disconnect().await;
                 return Ok(());
+            }
+            _ = client_failed.cancelled() => {
+                tracing::error!("Nym client shut down unexpectedly; exiting");
+                anyhow::bail!("Nym client shut down unexpectedly");
             }
             // wait_for_messages returns Option<Vec<ReconstructedMessage>>
             batch = client.wait_for_messages() => match batch {
