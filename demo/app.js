@@ -61,6 +61,9 @@ let directWs = null;
 let nymClient = null;
 let requestId = 1;
 let pendingRequests = {};
+// Native proxy control requests awaiting a reply (JSON-RPC ids).
+let pendingModeSwitch = null; // { id, mode }
+let pendingModeQuery = null;  // id of the blindhop_getMetrics sent on connect
 let chart = null;
 
 // Metrics per mode
@@ -147,7 +150,24 @@ function initSlider() {
     setPrivacyMode('full');
 }
 
+/**
+ * Request a privacy mode. With a native proxy, the new mode is shown only
+ * after the proxy confirms it, so the page never claims a privacy level
+ * the proxy isn't providing.
+ */
 function setPrivacyMode(mode) {
+    if (connectionMode === 'native' && proxyWs && proxyWs.readyState === WebSocket.OPEN) {
+        const id = sendToProxy('blindhop_setPrivacyMode', [mode]);
+        pendingModeSwitch = { id, mode };
+        document.getElementById('indicator-text').textContent =
+            `Switching to ${MODE_INFO[mode].label}…`;
+        return;
+    }
+    renderPrivacyMode(mode);
+}
+
+/** Show `mode` as the active privacy mode (UI only). */
+function renderPrivacyMode(mode) {
     currentMode = mode;
     const info = MODE_INFO[mode];
     const slider = document.getElementById('privacy-slider');
@@ -174,11 +194,45 @@ function setPrivacyMode(mode) {
     const ipValue = document.getElementById('ip-visibility');
     ipRow.className = 'stat-row ip-row ' + (info.ipExposed ? 'exposed' : 'hidden');
     ipValue.textContent = info.ipLabel;
+}
 
-    // Notify native proxy of mode change if connected
-    if (connectionMode === 'native' && proxyWs && proxyWs.readyState === WebSocket.OPEN) {
-        sendToProxy('blindhop_setPrivacyMode', [mode]);
+/**
+ * Handle replies to the proxy control requests sent by this page.
+ * @returns {boolean} true if `data` was such a reply.
+ */
+function handleProxyControlReply(data) {
+    let response;
+    try {
+        response = JSON.parse(data);
+    } catch {
+        return false;
     }
+
+    if (pendingModeSwitch && response.id === pendingModeSwitch.id) {
+        const requested = pendingModeSwitch.mode;
+        pendingModeSwitch = null;
+        if (response.result && MODE_INFO[response.result.mode_id]) {
+            renderPrivacyMode(response.result.mode_id);
+        } else {
+            // Show the mode the proxy is actually in, not the one requested.
+            const actual = response.error?.data?.mode_id;
+            renderPrivacyMode(MODE_INFO[actual] ? actual : currentMode);
+            const message = response.error?.message || 'unknown error';
+            console.error(`[Proxy] Switch to ${requested} failed:`, message);
+            const nymStatus = document.getElementById('nym-status');
+            if (nymStatus) nymStatus.textContent = `Mode switch failed: ${message}`;
+        }
+        return true;
+    }
+
+    if (pendingModeQuery !== null && response.id === pendingModeQuery) {
+        pendingModeQuery = null;
+        const actual = response.result?.mode_id;
+        if (MODE_INFO[actual]) renderPrivacyMode(actual);
+        return true;
+    }
+
+    return false;
 }
 
 function updateSliderForMode(connMode) {
@@ -224,7 +278,9 @@ function connectProxy() {
                 console.log('[Proxy] Connected');
                 resolve();
             };
-            proxyWs.onmessage = (event) => handleResponse('proxy', event.data);
+            proxyWs.onmessage = (event) => {
+                if (!handleProxyControlReply(event.data)) handleResponse('proxy', event.data);
+            };
             proxyWs.onerror = (e) => {
                 console.error('[Proxy] Error:', e);
                 reject(e);
@@ -435,6 +491,8 @@ async function startQuerying() {
         if (connectionMode === 'native') {
             startBtn.textContent = '⏳ Connecting to proxy...';
             await connectProxy();
+            // Show the proxy's actual mode (it may have been started in another mode).
+            pendingModeQuery = sendToProxy('blindhop_getMetrics', []);
             sendRpc(proxyWs, 'system_chain', [], 'proxy');
             updateStatus('connected');
         } else {

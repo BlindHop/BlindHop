@@ -74,17 +74,8 @@ async fn handle_connection(
                 // Check if this is a control message (privacy mode change)
                 if let Ok(control) = serde_json::from_slice::<ControlMessage>(data) {
                     if control.method == "blindhop_setPrivacyMode" {
-                        handle_control_message(&control, &transport, &config).await;
-                        // Send acknowledgment
-                        let ack = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": control.id,
-                            "result": {
-                                "mode": format!("{}", config.privacy_mode),
-                                "status": "ok"
-                            }
-                        });
-                        let _ = ws_tx.send(Message::Text(ack.to_string().into())).await;
+                        let reply = set_privacy_mode_reply(&control, &transport, &config).await;
+                        let _ = ws_tx.send(Message::Text(reply.to_string().into())).await;
                         continue;
                     }
 
@@ -97,6 +88,7 @@ async fn handle_connection(
                             "id": control.id,
                             "result": {
                                 "mode": format!("{}", info.mode),
+                                "mode_id": info.mode,
                                 "hop_count": info.hop_count,
                                 "cover_traffic": info.cover_traffic_active,
                                 "gateway": info.gateway_address,
@@ -184,29 +176,57 @@ fn origin_allowed(origin: Option<&str>, allowed: &[String]) -> bool {
     }
 }
 
-/// Handle a BlindHop control message (e.g., privacy mode change).
-async fn handle_control_message(
+/// Handle `blindhop_setPrivacyMode` and build its JSON-RPC reply.
+///
+/// On success the reply reports the mode now in effect. On failure it is a
+/// JSON-RPC error whose `data.mode_id` is the mode actually in effect, so a
+/// UI never shows a privacy level the proxy isn't providing.
+async fn set_privacy_mode_reply(
     control: &ControlMessage,
     transport: &Arc<RwLock<ActiveTransport>>,
     config: &BlindHopConfig,
-) {
-    if let Some(mode_str) = control.params.first().and_then(|v| v.as_str()) {
-        let new_mode = match mode_str {
-            "none" => PrivacyMode::None,
-            "fast" => PrivacyMode::Fast,
-            "full" => PrivacyMode::Full,
-            _ => {
-                tracing::warn!("Unknown privacy mode: {}", mode_str);
-                return;
-            }
-        };
-
-        tracing::info!("Privacy mode change requested: {}", new_mode.label());
-
-        let mut guard = transport.write().await;
-        if let Err(e) = guard.switch_mode(new_mode, config).await {
-            tracing::error!("Failed to switch privacy mode: {}", e);
+) -> serde_json::Value {
+    let error = |code: i64, message: String, current: Option<PrivacyMode>| {
+        let mut error = serde_json::json!({ "code": code, "message": message });
+        if let Some(mode) = current {
+            error["data"] = serde_json::json!({ "mode": mode.label(), "mode_id": mode });
         }
+        serde_json::json!({ "jsonrpc": "2.0", "id": control.id, "error": error })
+    };
+
+    let new_mode = match parse_mode_param(&control.params) {
+        Ok(mode) => mode,
+        Err(message) => return error(-32602, message, None),
+    };
+    tracing::info!("Privacy mode change requested: {}", new_mode.label());
+
+    let mut guard = transport.write().await;
+    match guard.switch_mode(new_mode, config).await {
+        Ok(()) => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": control.id,
+            "result": { "mode": new_mode.label(), "mode_id": new_mode, "status": "ok" }
+        }),
+        Err(e) => {
+            tracing::error!("Failed to switch privacy mode: {}", e);
+            let current = guard.privacy_info().mode;
+            error(
+                -32000,
+                format!("Failed to switch privacy mode: {}", e),
+                Some(current),
+            )
+        }
+    }
+}
+
+/// Parse `["none" | "fast" | "full"]`.
+fn parse_mode_param(params: &[serde_json::Value]) -> Result<PrivacyMode, String> {
+    match params.first().and_then(|v| v.as_str()) {
+        Some("none") => Ok(PrivacyMode::None),
+        Some("fast") => Ok(PrivacyMode::Fast),
+        Some("full") => Ok(PrivacyMode::Full),
+        Some(other) => Err(format!("Unknown privacy mode: {}", other)),
+        None => Err(r#"Expected params: ["none" | "fast" | "full"]"#.to_string()),
     }
 }
 
@@ -246,6 +266,67 @@ mod tests {
             Some("https://demo.blindhop.wtf.evil.example"),
             &allowed()
         ));
+    }
+
+    #[test]
+    fn mode_param_parsing() {
+        use serde_json::json;
+        assert_eq!(parse_mode_param(&[json!("full")]), Ok(PrivacyMode::Full));
+        assert_eq!(parse_mode_param(&[json!("none")]), Ok(PrivacyMode::None));
+        assert!(parse_mode_param(&[json!("max")]).is_err());
+        assert!(parse_mode_param(&[json!(5)]).is_err());
+        assert!(parse_mode_param(&[]).is_err());
+    }
+
+    fn control(params: serde_json::Value) -> ControlMessage {
+        serde_json::from_value(serde_json::json!({
+            "id": 7, "method": "blindhop_setPrivacyMode", "params": params
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_switch_reports_error_and_actual_mode() {
+        // Direct mode needs no network. Switching to Full without an exit
+        // address fails, and the proxy stays in Direct mode.
+        let config = BlindHopConfig {
+            privacy_mode: PrivacyMode::None,
+            exit_address: None,
+            ..Default::default()
+        };
+        let transport = Arc::new(RwLock::new(ActiveTransport::new(&config).await.unwrap()));
+
+        let reply =
+            set_privacy_mode_reply(&control(serde_json::json!(["full"])), &transport, &config)
+                .await;
+        assert_eq!(reply["id"], 7);
+        assert!(
+            reply.get("result").is_none(),
+            "must not report success: {reply}"
+        );
+        assert_eq!(reply["error"]["code"], -32000);
+        assert_eq!(reply["error"]["data"]["mode_id"], "none");
+    }
+
+    #[tokio::test]
+    async fn successful_switch_reports_new_mode() {
+        let config = BlindHopConfig {
+            privacy_mode: PrivacyMode::None,
+            ..Default::default()
+        };
+        let transport = Arc::new(RwLock::new(ActiveTransport::new(&config).await.unwrap()));
+
+        // None -> None is a no-op switch that succeeds without network.
+        let reply =
+            set_privacy_mode_reply(&control(serde_json::json!(["none"])), &transport, &config)
+                .await;
+        assert_eq!(reply["result"]["mode_id"], "none");
+        assert_eq!(reply["result"]["status"], "ok");
+
+        let reply =
+            set_privacy_mode_reply(&control(serde_json::json!(["bogus"])), &transport, &config)
+                .await;
+        assert_eq!(reply["error"]["code"], -32602);
     }
 
     #[test]
