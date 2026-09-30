@@ -183,18 +183,24 @@ async fn connect_persistent(data_dir: &Path) -> Result<MixnetClient> {
 
 /// Nym client settings for the exit.
 ///
-/// Every reply packet uses one reply SURB supplied by the proxy. A ~1 MB
-/// response is several hundred packets; with the SDK default of at most 50
-/// SURBs per top-up request, large replies took ~60 s and hit the proxy's
-/// timeout. 500 is the most a client allows by default
-/// (`maximum_allowed_reply_surb_request_size`).
+/// - Every reply packet uses one reply SURB supplied by the proxy. A ~1 MB
+///   response is several hundred packets; with the SDK default of at most 50
+///   SURBs per top-up request, large replies took ~60 s and hit the proxy's
+///   timeout. 500 is the most a client allows by default
+///   (`maximum_allowed_reply_surb_request_size`).
+/// - The exit sends every user's replies through one outgoing queue. At the
+///   SDK's default average send delay (20 ms, ~50 packets/s) a burst of large
+///   replies backed up ~3,400 packets and delayed everyone. 5 ms (~200
+///   packets/s) keeps the Poisson-distributed timing, just at a higher rate.
 fn debug_config() -> nym_sdk::DebugConfig {
     let mut config = nym_sdk::DebugConfig::default();
     config.reply_surbs.maximum_reply_surb_request_size = MAX_REPLY_SURB_REQUEST;
+    config.traffic.message_sending_average_delay = SEND_AVERAGE_DELAY;
     config
 }
 
 const MAX_REPLY_SURB_REQUEST: u32 = 500;
+const SEND_AVERAGE_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// Create `dir` if needed, readable only by the owner (it holds private keys).
 fn create_private_dir(dir: &Path) -> Result<()> {

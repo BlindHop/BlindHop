@@ -7,14 +7,17 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
-/// Requests in flight across all clients. With responses capped at
-/// `policy::MAX_RESPONSE_BYTES` (4 MiB), this bounds response buffers to
-/// ~128 MB, within the planned 256 MB `MemoryMax`.
-pub const MAX_IN_FLIGHT: usize = 32;
+/// Requests in flight across all clients. Measured ~3.9 MB of memory per
+/// in-flight 1.2 MB response (~3.2x: upstream buffer, reply, compressed
+/// copy, frame); at the 4 MiB response cap that's ~13 MB each, so 16 in
+/// flight stays near 210 MB, within the planned 256 MB `MemoryMax`.
+pub const MAX_IN_FLIGHT: usize = 16;
 
-/// Requests in flight for one client (one anonymous sender tag). A local
-/// proxy is a single Nym client, so this is also one user's burst limit.
-pub const MAX_IN_FLIGHT_PER_CLIENT: usize = 16;
+/// Requests in flight for one client (one anonymous sender tag), so one
+/// client can't take every slot. A local proxy is a single Nym client, so
+/// this is also one user's burst limit. A request counts only until its
+/// reply is queued, so short requests rarely reach it.
+pub const MAX_IN_FLIGHT_PER_CLIENT: usize = 8;
 
 /// Tracks in-flight requests, globally and per client.
 pub struct Limiter<K> {
