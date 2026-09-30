@@ -16,14 +16,10 @@ use crate::nym_transport::NymTransport;
 /// The currently active transport, handling mode switching.
 pub enum ActiveTransport {
     /// Direct WebSocket connection (no privacy).
-    Direct {
-        target_url: String,
-    },
+    Direct { target_url: String },
 
     /// Nym-based transport (Fast or Full mode).
-    Nym {
-        transport: NymTransport,
-    },
+    Nym { transport: Box<NymTransport> },
 }
 
 impl ActiveTransport {
@@ -43,10 +39,11 @@ impl ActiveTransport {
                     )
                 })?;
 
-                let transport =
-                    NymTransport::connect(exit_addr, config.privacy_mode).await?;
+                let transport = NymTransport::connect(exit_addr, config.privacy_mode).await?;
 
-                Ok(Self::Nym { transport })
+                Ok(Self::Nym {
+                    transport: Box::new(transport),
+                })
             }
         }
     }
@@ -121,13 +118,13 @@ impl ActiveTransport {
             }
             PrivacyMode::Fast | PrivacyMode::Full => {
                 let exit_addr = config.exit_address.clone().ok_or_else(|| {
-                    BlindHopError::Config(
-                        "Exit address required for Nym modes".to_string(),
-                    )
+                    BlindHopError::Config("Exit address required for Nym modes".to_string())
                 })?;
 
                 let transport = NymTransport::connect(exit_addr, new_mode).await?;
-                *self = Self::Nym { transport };
+                *self = Self::Nym {
+                    transport: Box::new(transport),
+                };
             }
         }
 
@@ -175,9 +172,7 @@ async fn send_direct(message: &[u8], target_url: &str) -> Result<Vec<u8>> {
                 return Err(BlindHopError::SubstrateRpc(format!("Read error: {}", e)));
             }
             None => {
-                return Err(BlindHopError::SubstrateRpc(
-                    "Connection closed".to_string(),
-                ));
+                return Err(BlindHopError::SubstrateRpc("Connection closed".to_string()));
             }
             _ => continue,
         }

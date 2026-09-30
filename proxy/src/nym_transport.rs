@@ -72,15 +72,8 @@ impl NymTransport {
         })
     }
 
-    /// Get the exit service address.
-    pub fn exit_address(&self) -> &str {
-        &self.exit_address
-    }
-
     /// Parse a Nym recipient address from a string.
-    fn parse_recipient(
-        address: &str,
-    ) -> Result<nym_sdk::mixnet::Recipient> {
+    fn parse_recipient(address: &str) -> Result<nym_sdk::mixnet::Recipient> {
         nym_sdk::mixnet::Recipient::try_from_base58_string(address.to_string())
             .map_err(|e| BlindHopError::NymTransport(format!("Invalid recipient address: {}", e)))
     }
@@ -148,7 +141,7 @@ impl MixnetTransport for NymTransport {
             mode,
             hop_count: mode.hop_count(),
             cover_traffic_active: mode.has_cover_traffic(),
-            gateway_address: None, // TODO: Extract from Nym client
+            gateway_address: None,    // TODO: Extract from Nym client
             anonymity_set_size: None, // TODO: Query from Nym network
             our_address,
         }

@@ -14,7 +14,6 @@ use blindhop_common::config::{BlindHopConfig, PrivacyMode};
 use blindhop_common::metrics::MetricsCollector;
 
 use crate::mode::ActiveTransport;
-use crate::nym_transport::NymTransport;
 
 /// Run the proxy server, accepting smoldot connections and routing
 /// through the configured transport.
@@ -71,9 +70,7 @@ async fn handle_connection(
                                 "status": "ok"
                             }
                         });
-                        let _ = ws_tx
-                            .send(Message::Text(ack.to_string().into()))
-                            .await;
+                        let _ = ws_tx.send(Message::Text(ack.to_string().into())).await;
                         continue;
                     }
 
@@ -96,9 +93,7 @@ async fn handle_connection(
                                 "messages_received": transport_metrics.messages_received,
                             }
                         });
-                        let _ = ws_tx
-                            .send(Message::Text(ack.to_string().into()))
-                            .await;
+                        let _ = ws_tx.send(Message::Text(ack.to_string().into())).await;
                         continue;
                     }
                 }
@@ -115,15 +110,8 @@ async fn handle_connection(
                 match reply {
                     Ok(response) => {
                         let reply_text = String::from_utf8_lossy(&response).to_string();
-                        tracing::debug!(
-                            "Response ({} bytes, {:.0}ms)",
-                            response.len(),
-                            elapsed
-                        );
-                        if let Err(e) = ws_tx
-                            .send(Message::Text(reply_text.into()))
-                            .await
-                        {
+                        tracing::debug!("Response ({} bytes, {:.0}ms)", response.len(), elapsed);
+                        if let Err(e) = ws_tx.send(Message::Text(reply_text.into())).await {
                             tracing::warn!("Failed to send reply to smoldot: {}", e);
                             break;
                         }

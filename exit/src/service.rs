@@ -32,7 +32,11 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
 
     // Initialize the Substrate RPC backend
     let backend = SubstrateWsBackend::new(target_rpc.to_string());
-    tracing::info!("Exit service ready — forwarding to {}", target_rpc);
+    tracing::info!(
+        "Exit service ready — forwarding to {} via {} backend",
+        target_rpc,
+        backend.backend_type()
+    );
 
     // Main message processing loop
     loop {
@@ -55,10 +59,7 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
                         continue;
                     }
 
-                    tracing::debug!(
-                        "Received request ({} bytes) from mixnet",
-                        msg.payload.len()
-                    );
+                    tracing::debug!("Received request ({} bytes) from mixnet", msg.payload.len());
 
                     // Forward to Substrate full node
                     match backend.forward_rpc(&msg.payload).await {
@@ -69,10 +70,7 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
 
                             // Send back through the mixnet using sender tag (SURB reply)
                             if let Some(tag) = sender {
-                                if let Err(e) = client
-                                    .send_reply(tag, reply_bytes)
-                                    .await
-                                {
+                                if let Err(e) = client.send_reply(tag, reply_bytes).await {
                                     tracing::warn!("Failed to send reply through mixnet: {}", e);
                                 }
                             } else {
@@ -90,13 +88,10 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
                                     "message": format!("Exit service error: {}", e)
                                 }
                             });
-                            let reply = MixnetMessage::response(
-                                serde_json::to_vec(&error_json).unwrap(),
-                            );
+                            let reply =
+                                MixnetMessage::response(serde_json::to_vec(&error_json).unwrap());
                             if let Some(tag) = sender {
-                                let _ = client
-                                    .send_reply(tag, reply.to_bytes())
-                                    .await;
+                                let _ = client.send_reply(tag, reply.to_bytes()).await;
                             }
                         }
                     }

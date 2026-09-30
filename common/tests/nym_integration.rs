@@ -12,7 +12,7 @@
 #[cfg(feature = "nym-live")]
 mod live_tests {
     use blindhop_common::config::PrivacyMode;
-    use blindhop_common::rpc::{MixnetMessage, MessageType};
+    use blindhop_common::rpc::{MessageType, MixnetMessage};
 
     /// Test: Connect a Nym client, send a message, receive a reply.
     /// Requires a running exit service.

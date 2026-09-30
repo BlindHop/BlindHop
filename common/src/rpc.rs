@@ -116,7 +116,8 @@ impl MixnetMessage {
 
     /// Deserialize from bytes received from the mixnet.
     pub fn from_bytes(data: &[u8]) -> crate::error::Result<Self> {
-        serde_json::from_slice(data).map_err(|e| crate::error::BlindHopError::JsonRpc(e.to_string()))
+        serde_json::from_slice(data)
+            .map_err(|e| crate::error::BlindHopError::JsonRpc(e.to_string()))
     }
 }
 
@@ -165,7 +166,8 @@ mod tests {
 
     #[test]
     fn test_json_rpc_error_response() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.is_error());
         assert!(resp.result().is_none());

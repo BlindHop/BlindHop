@@ -3,7 +3,7 @@
 //! This is the complete integration test that validates the full BlindHop path.
 //! Requires:
 //! - Running `blindhop-exit` service
-//! - Running `blindhop-proxy` 
+//! - Running `blindhop-proxy`
 //! - Nym network connectivity
 //! - Access to a Substrate full node (e.g., Paseo AssetHub)
 //!
@@ -16,8 +16,8 @@ use std::time::Instant;
 #[tokio::test]
 #[ignore = "Requires running proxy, exit service, and Nym connectivity"]
 async fn test_e2e_get_header_via_proxy() {
-    let proxy_url = std::env::var("BLINDHOP_PROXY_WS")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
+    let proxy_url =
+        std::env::var("BLINDHOP_PROXY_WS").unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
 
     eprintln!("Connecting to proxy at: {}", proxy_url);
 
@@ -39,8 +39,8 @@ async fn test_e2e_get_header_via_proxy() {
 #[tokio::test]
 #[ignore = "Requires running proxy, exit service, and Nym connectivity"]
 async fn test_e2e_mode_comparison() {
-    let proxy_url = std::env::var("BLINDHOP_PROXY_WS")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
+    let proxy_url =
+        std::env::var("BLINDHOP_PROXY_WS").unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
 
     eprintln!("Connecting to proxy at: {}", proxy_url);
 
@@ -57,8 +57,8 @@ async fn test_e2e_mode_comparison() {
 #[tokio::test]
 #[ignore = "Requires running proxy, exit service, and Nym connectivity"]
 async fn test_e2e_concurrent_requests() {
-    let proxy_url = std::env::var("BLINDHOP_PROXY_WS")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
+    let proxy_url =
+        std::env::var("BLINDHOP_PROXY_WS").unwrap_or_else(|_| "ws://127.0.0.1:9500".to_string());
 
     eprintln!("Connecting to proxy at: {}", proxy_url);
 

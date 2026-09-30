@@ -5,16 +5,19 @@
 //!
 //! Run: `cargo test -p blindhop-common --test proxy_unit`
 
-use blindhop_common::config::{BlindHopConfig, PrivacyMode, ExitBackendType};
-use blindhop_common::rpc::{JsonRpcRequest, JsonRpcResponse, MixnetMessage, MessageType};
+use blindhop_common::config::{BlindHopConfig, ExitBackendType, PrivacyMode};
 use blindhop_common::metrics::MetricsCollector;
+use blindhop_common::rpc::{JsonRpcRequest, JsonRpcResponse, MessageType, MixnetMessage};
 
 /// Test that the default config has sensible defaults.
 #[test]
 fn test_default_config() {
     let config = BlindHopConfig::default();
     assert!(matches!(config.privacy_mode, PrivacyMode::Full));
-    assert!(matches!(config.exit_backend, ExitBackendType::ServiceProvider));
+    assert!(matches!(
+        config.exit_backend,
+        ExitBackendType::ServiceProvider
+    ));
 }
 
 /// Test that privacy mode has correct properties.
@@ -50,7 +53,8 @@ fn test_rpc_response_parsing() {
     assert!(response.result.is_some());
     assert!(response.error.is_none());
 
-    let error_json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+    let error_json =
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
     let response: JsonRpcResponse = serde_json::from_str(error_json).unwrap();
     assert!(response.result.is_none());
     assert!(response.error.is_some());
@@ -102,12 +106,18 @@ fn test_metrics_snapshot() {
     let snapshot = collector.snapshot();
 
     // p50 should be around 50ms
-    assert!(snapshot.latency_p50_ms >= 45.0 && snapshot.latency_p50_ms <= 55.0,
-        "p50 was {}ms", snapshot.latency_p50_ms);
+    assert!(
+        snapshot.latency_p50_ms >= 45.0 && snapshot.latency_p50_ms <= 55.0,
+        "p50 was {}ms",
+        snapshot.latency_p50_ms
+    );
 
     // p95 should be around 95ms
-    assert!(snapshot.latency_p95_ms >= 90.0 && snapshot.latency_p95_ms <= 100.0,
-        "p95 was {}ms", snapshot.latency_p95_ms);
+    assert!(
+        snapshot.latency_p95_ms >= 90.0 && snapshot.latency_p95_ms <= 100.0,
+        "p95 was {}ms",
+        snapshot.latency_p95_ms
+    );
 }
 
 /// Test metrics collector eviction when capacity is exceeded.
@@ -122,8 +132,11 @@ fn test_metrics_eviction() {
 
     // Only the last 10 should remain (11-20ms)
     let snapshot = collector.snapshot();
-    assert!(snapshot.latency_p50_ms >= 14.0 && snapshot.latency_p50_ms <= 17.0,
-        "p50 was {}ms", snapshot.latency_p50_ms);
+    assert!(
+        snapshot.latency_p50_ms >= 14.0 && snapshot.latency_p50_ms <= 17.0,
+        "p50 was {}ms",
+        snapshot.latency_p50_ms
+    );
 }
 
 /// Test metrics reset clears all data.
@@ -158,7 +171,8 @@ fn test_privacy_mode_serde() {
 /// Test control message parsing (blindhop_setPrivacyMode).
 #[test]
 fn test_control_message_parsing() {
-    let control_msg = r#"{"jsonrpc":"2.0","id":99,"method":"blindhop_setPrivacyMode","params":["fast"]}"#;
+    let control_msg =
+        r#"{"jsonrpc":"2.0","id":99,"method":"blindhop_setPrivacyMode","params":["fast"]}"#;
     let request: JsonRpcRequest = serde_json::from_str(control_msg).unwrap();
 
     assert_eq!(request.method, "blindhop_setPrivacyMode");

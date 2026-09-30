@@ -10,11 +10,11 @@
 //! Run all benchmarks (requires Nym connectivity):
 //!   cargo bench -p blindhop-proxy --bench nym --features nym-live
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use blindhop_common::rpc::{JsonRpcRequest, MixnetMessage, MessageType};
-use blindhop_common::metrics::MetricsCollector;
 use blindhop_common::config::PrivacyMode;
+use blindhop_common::metrics::MetricsCollector;
+use blindhop_common::rpc::{JsonRpcRequest, MessageType, MixnetMessage};
 
 /// Benchmark JSON-RPC request serialization (used on every send).
 fn bench_rpc_serialization(c: &mut Criterion) {

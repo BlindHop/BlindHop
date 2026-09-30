@@ -92,8 +92,7 @@ impl Cli {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -115,7 +114,11 @@ async fn main() -> Result<()> {
     tracing::info!("Starting BlindHop Proxy (Nym Mixnet)");
     tracing::info!("  Listen:       {}", config.listen_addr);
     tracing::info!("  Target:       {}", config.target_rpc);
-    tracing::info!("  Privacy:      {} {}", privacy_mode.indicator(), privacy_mode);
+    tracing::info!(
+        "  Privacy:      {} {}",
+        privacy_mode.indicator(),
+        privacy_mode
+    );
     tracing::info!("  Exit backend: {}", exit_backend);
     if let Some(ref addr) = config.exit_address {
         tracing::info!("  Exit address: {}", addr);

@@ -13,9 +13,9 @@ use blindhop_common::error::{BlindHopError, Result};
 /// Opens a new WebSocket connection for each request. In production,
 /// this should be replaced with a connection pool for better performance.
 pub async fn forward_rpc_message(request: &[u8], target_url: &str) -> Result<Vec<u8>> {
-    let (mut ws, _) = connect_async(target_url)
-        .await
-        .map_err(|e| BlindHopError::SubstrateRpc(format!("Failed to connect to {}: {}", target_url, e)))?;
+    let (mut ws, _) = connect_async(target_url).await.map_err(|e| {
+        BlindHopError::SubstrateRpc(format!("Failed to connect to {}: {}", target_url, e))
+    })?;
 
     let text = String::from_utf8_lossy(request).to_string();
     ws.send(Message::Text(text.into()))
@@ -43,9 +43,7 @@ pub async fn forward_rpc_message(request: &[u8], target_url: &str) -> Result<Vec
                 return Err(BlindHopError::SubstrateRpc(format!("Read error: {}", e)));
             }
             None => {
-                return Err(BlindHopError::SubstrateRpc(
-                    "Connection closed".to_string(),
-                ));
+                return Err(BlindHopError::SubstrateRpc("Connection closed".to_string()));
             }
             _ => continue,
         }

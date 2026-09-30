@@ -1,7 +1,7 @@
 //! Transport metrics collection and aggregation.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Transport performance metrics.
 ///

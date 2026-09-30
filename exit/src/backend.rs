@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 
-use blindhop_common::error::{BlindHopError, Result};
+use blindhop_common::error::Result;
 
 use crate::substrate_rpc;
 
