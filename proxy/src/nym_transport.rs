@@ -3,36 +3,56 @@
 //! This module wraps `nym_sdk::mixnet::MixnetClient` to provide
 //! the pluggable `MixnetTransport` interface for routing traffic
 //! through the Nym mixnet.
+//!
+//! One client is shared by every connection. Requests are sent through a
+//! cloned sender, and a single background task owns the receive side,
+//! routing each reply to its waiting request by correlation ID.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::time::Duration;
 
-use nym_sdk::mixnet::MixnetMessageSender;
+use nym_sdk::mixnet::{MixnetClient, MixnetClientSender, MixnetMessageSender, Recipient};
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use blindhop_common::config::PrivacyMode;
 use blindhop_common::error::{BlindHopError, Result};
 use blindhop_common::metrics::{MetricsCollector, TransportMetrics};
-use blindhop_common::rpc::MixnetMessage;
+use blindhop_common::rpc::{MessageType, MixnetMessage};
 use blindhop_common::transport::{MixnetTransport, PrivacyInfo};
+
+/// How long a request waits for its reply before failing.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Requests awaiting a reply, keyed by correlation ID.
+type PendingReplies = Arc<Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>>;
 
 /// Nym-based mixnet transport.
 ///
 /// Uses `nym-sdk` to route messages through the Nym mixnet.
 /// Supports runtime switching between 2-hop (Fast) and 5-hop (Full) modes.
 pub struct NymTransport {
-    /// The Nym mixnet client.
-    client: Mutex<Option<nym_sdk::mixnet::MixnetClient>>,
-
-    /// Received payloads not yet returned by `recv()` (a batch from
-    /// `wait_for_messages()` can hold more than one message).
-    pending: StdMutex<VecDeque<Vec<u8>>>,
+    /// Send half of the Nym client; the receive half lives in `receiver_task`.
+    sender: MixnetClientSender,
 
     /// Nym address of the exit service.
-    exit_address: String,
+    exit_recipient: Recipient,
+
+    /// Requests awaiting a reply.
+    pending: PendingReplies,
+
+    /// Next correlation ID. Starts at 1; 0 means "no ID" on the wire.
+    next_id: AtomicU64,
+
+    /// Signals the receiver task to disconnect the client and stop.
+    shutdown: Mutex<Option<oneshot::Sender<()>>>,
+
+    /// Background task that owns the client and routes replies.
+    receiver_task: Mutex<Option<JoinHandle<()>>>,
 
     /// Current privacy mode.
     ///
@@ -62,12 +82,15 @@ impl NymTransport {
     /// * `exit_address` - The Nym address of the BlindHop exit service
     /// * `privacy_mode` - Initial privacy mode (Fast or Full)
     pub async fn connect(exit_address: String, privacy_mode: PrivacyMode) -> Result<Self> {
+        let exit_recipient = Recipient::try_from_base58_string(&exit_address)
+            .map_err(|e| BlindHopError::NymTransport(format!("Invalid exit address: {}", e)))?;
+
         tracing::info!(
             "Connecting to Nym mixnet in {} mode...",
             privacy_mode.label()
         );
 
-        let client = nym_sdk::mixnet::MixnetClient::connect_new()
+        let client = MixnetClient::connect_new()
             .await
             .map_err(|e| BlindHopError::NymTransport(format!("Failed to connect: {}", e)))?;
 
@@ -79,13 +102,28 @@ impl NymTransport {
         let shutting_down = Arc::new(AtomicBool::new(false));
         Self::watch_for_shutdown(&client, connected.clone(), shutting_down.clone());
 
+        let sender = client.split_sender();
+        let pending = PendingReplies::default();
+        let metrics = Arc::new(MetricsCollector::new(200));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let receiver_task = tokio::spawn(receive_replies(
+            client,
+            pending.clone(),
+            metrics.clone(),
+            shutting_down.clone(),
+            shutdown_rx,
+        ));
+
         Ok(Self {
-            client: Mutex::new(Some(client)),
-            pending: StdMutex::new(VecDeque::new()),
-            exit_address,
+            sender,
+            exit_recipient,
+            pending,
+            next_id: AtomicU64::new(1),
+            shutdown: Mutex::new(Some(shutdown_tx)),
+            receiver_task: Mutex::new(Some(receiver_task)),
             privacy_mode: RwLock::new(privacy_mode),
             our_address,
-            metrics: Arc::new(MetricsCollector::new(200)),
+            metrics,
             connected,
             shutting_down,
         })
@@ -97,7 +135,7 @@ impl NymTransport {
     /// keeps running, failing every request. Exiting non-zero lets a
     /// supervisor (systemd, Docker) restart it instead.
     fn watch_for_shutdown(
-        client: &nym_sdk::mixnet::MixnetClient,
+        client: &MixnetClient,
         connected: Arc<AtomicBool>,
         shutting_down: Arc<AtomicBool>,
     ) {
@@ -118,81 +156,131 @@ impl NymTransport {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
 
-    /// Parse a Nym recipient address from a string.
-    fn parse_recipient(address: &str) -> Result<nym_sdk::mixnet::Recipient> {
-        nym_sdk::mixnet::Recipient::try_from_base58_string(address.to_string())
-            .map_err(|e| BlindHopError::NymTransport(format!("Invalid recipient address: {}", e)))
+/// Owns the client's receive side: routes each reply to the request with
+/// the same correlation ID, until shutdown is signalled or the channel closes.
+async fn receive_replies(
+    mut client: MixnetClient,
+    pending: PendingReplies,
+    metrics: Arc<MetricsCollector>,
+    shutting_down: Arc<AtomicBool>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            // Also fires if the transport is dropped without disconnect().
+            _ = &mut shutdown_rx => break,
+            batch = client.wait_for_messages() => {
+                let Some(batch) = batch else {
+                    tracing::warn!("Nym mixnet channel closed");
+                    break;
+                };
+                for msg in batch {
+                    route_reply(&msg.message, &pending, &metrics);
+                }
+            }
+        }
+    }
+
+    // Dropping the waiters fails their requests immediately instead of
+    // leaving them to time out.
+    lock(&pending).clear();
+    shutting_down.store(true, Ordering::SeqCst);
+    client.disconnect().await;
+}
+
+/// Deliver one received message to the request waiting for it.
+fn route_reply(bytes: &[u8], pending: &PendingReplies, metrics: &MetricsCollector) {
+    let msg = match MixnetMessage::from_bytes(bytes) {
+        Ok(msg) if msg.msg_type == MessageType::Response => msg,
+        Ok(_) => {
+            tracing::debug!("Ignoring non-response mixnet message");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("Dropping unparseable mixnet message: {}", e);
+            return;
+        }
+    };
+
+    let waiter = lock(pending).remove(&msg.correlation_id);
+    match waiter {
+        Some(tx) => {
+            metrics.record_recv();
+            tracing::debug!(
+                "Received {} bytes from Nym mixnet (correlation ID {})",
+                msg.payload.len(),
+                msg.correlation_id
+            );
+            // The requester may have given up (timeout); nothing to do then.
+            let _ = tx.send(msg.payload);
+        }
+        None => tracing::warn!(
+            "Dropping reply with unknown correlation ID {} (timed out or duplicate)",
+            msg.correlation_id
+        ),
+    }
+}
+
+/// Lock a mutex, ignoring poisoning (critical sections here can't panic
+/// midway and leave the data inconsistent).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Removes a request's entry from the pending map when the request ends,
+/// however it ends (reply, error, timeout, or the future being dropped).
+struct PendingGuard<'a> {
+    pending: &'a PendingReplies,
+    id: u64,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        lock(self.pending).remove(&self.id);
     }
 }
 
 #[async_trait]
 impl MixnetTransport for NymTransport {
-    async fn send(&self, data: &[u8]) -> Result<()> {
-        let guard = self.client.lock().await;
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| BlindHopError::NymTransport("Not connected".to_string()))?;
+    async fn request(&self, data: &[u8]) -> Result<Vec<u8>> {
+        if !self.is_connected() {
+            return Err(BlindHopError::NymTransport("Not connected".to_string()));
+        }
 
-        let recipient = Self::parse_recipient(&self.exit_address)?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        lock(&self.pending).insert(id, tx);
+        let _guard = PendingGuard {
+            pending: &self.pending,
+            id,
+        };
 
-        // Wrap in MixnetMessage envelope
-        let msg = MixnetMessage::request(data.to_vec());
-        let msg_bytes = msg.to_bytes();
-
-        client
-            .send_plain_message(recipient, msg_bytes)
+        let msg_bytes = MixnetMessage::request(id, data.to_vec()).to_bytes();
+        self.sender
+            .send_plain_message(self.exit_recipient, msg_bytes)
             .await
             .map_err(|e| BlindHopError::NymTransport(format!("Send failed: {}", e)))?;
 
-        drop(guard);
         self.metrics.record_send();
-        tracing::debug!("Sent {} bytes through Nym mixnet", data.len());
+        tracing::debug!(
+            "Sent {} bytes through Nym mixnet (correlation ID {})",
+            data.len(),
+            id
+        );
 
-        Ok(())
-    }
-
-    async fn recv(&self) -> Result<Vec<u8>> {
-        let mut guard = self.client.lock().await;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| BlindHopError::NymTransport("Not connected".to_string()))?;
-
-        // Messages left over from an earlier multi-message batch come first.
-        // Only touched while holding `self.client`, so recv order is preserved.
-        loop {
-            let queued = self
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pop_front();
-            if let Some(payload) = queued {
-                return Ok(payload);
-            }
-
-            // wait_for_messages can return an empty batch; keep waiting.
-            let received = client
-                .wait_for_messages()
-                .await
-                .ok_or_else(|| BlindHopError::NymTransport("Mixnet channel closed".to_string()))?;
-
-            let mut pending = self
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for msg in received {
-                match MixnetMessage::from_bytes(&msg.message) {
-                    Ok(mixnet_msg) => {
-                        self.metrics.record_recv();
-                        tracing::debug!(
-                            "Received {} bytes from Nym mixnet",
-                            mixnet_msg.payload.len()
-                        );
-                        pending.push_back(mixnet_msg.payload);
-                    }
-                    Err(e) => tracing::warn!("Dropping unparseable mixnet message: {}", e),
-                }
-            }
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(payload)) => Ok(payload),
+            Ok(Err(_)) => Err(BlindHopError::NymTransport(
+                "Nym client disconnected before the reply arrived".to_string(),
+            )),
+            Err(_) => Err(BlindHopError::NymTransport(format!(
+                "No reply from exit within {}s",
+                REQUEST_TIMEOUT.as_secs()
+            ))),
         }
     }
 
@@ -241,13 +329,81 @@ impl MixnetTransport for NymTransport {
     }
 
     async fn disconnect(&self) -> Result<()> {
-        let mut guard = self.client.lock().await;
-        if let Some(client) = guard.take() {
+        let shutdown = lock(&self.shutdown).take();
+        if let Some(shutdown) = shutdown {
             self.shutting_down.store(true, Ordering::SeqCst);
-            client.disconnect().await;
+            let _ = shutdown.send(());
+            let task = lock(&self.receiver_task).take();
+            if let Some(task) = task {
+                let _ = task.await;
+            }
             self.connected.store(false, Ordering::SeqCst);
             tracing::info!("Disconnected from Nym mixnet");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response_bytes(id: u64, payload: &[u8]) -> Vec<u8> {
+        MixnetMessage::response(id, payload.to_vec()).to_bytes()
+    }
+
+    fn waiter(pending: &PendingReplies, id: u64) -> oneshot::Receiver<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+        lock(pending).insert(id, tx);
+        rx
+    }
+
+    #[test]
+    fn replies_reach_their_own_request_in_any_order() {
+        let pending = PendingReplies::default();
+        let metrics = MetricsCollector::new(10);
+        let mut rx1 = waiter(&pending, 1);
+        let mut rx2 = waiter(&pending, 2);
+        let mut rx3 = waiter(&pending, 3);
+
+        route_reply(&response_bytes(3, b"three"), &pending, &metrics);
+        route_reply(&response_bytes(1, b"one"), &pending, &metrics);
+        route_reply(&response_bytes(2, b"two"), &pending, &metrics);
+
+        assert_eq!(rx1.try_recv().unwrap(), b"one");
+        assert_eq!(rx2.try_recv().unwrap(), b"two");
+        assert_eq!(rx3.try_recv().unwrap(), b"three");
+        assert!(lock(&pending).is_empty());
+    }
+
+    #[test]
+    fn unknown_and_non_response_messages_are_dropped() {
+        let pending = PendingReplies::default();
+        let metrics = MetricsCollector::new(10);
+        let mut rx = waiter(&pending, 1);
+
+        route_reply(&response_bytes(99, b"stale"), &pending, &metrics);
+        route_reply(
+            &MixnetMessage::request(1, b"not a reply".to_vec()).to_bytes(),
+            &pending,
+            &metrics,
+        );
+        route_reply(b"not json", &pending, &metrics);
+
+        assert!(rx.try_recv().is_err(), "waiter must still be pending");
+        assert_eq!(lock(&pending).len(), 1);
+    }
+
+    #[test]
+    fn pending_guard_removes_entry_on_drop() {
+        let pending = PendingReplies::default();
+        let _rx = waiter(&pending, 7);
+        {
+            let _guard = PendingGuard {
+                pending: &pending,
+                id: 7,
+            };
+        }
+        assert!(lock(&pending).is_empty());
     }
 }

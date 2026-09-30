@@ -81,6 +81,12 @@ pub struct MixnetMessage {
 
     /// Message type for the exit service to distinguish requests from responses.
     pub msg_type: MessageType,
+
+    /// Chosen by the sender of a request and echoed unchanged in the
+    /// response, so replies can be matched to requests. Many requests share
+    /// one mixnet client, and replies can arrive in any order.
+    #[serde(default)]
+    pub correlation_id: u64,
 }
 
 /// Type of message flowing through the mixnet.
@@ -94,18 +100,20 @@ pub enum MessageType {
 
 impl MixnetMessage {
     /// Create a request message.
-    pub fn request(payload: Vec<u8>) -> Self {
+    pub fn request(correlation_id: u64, payload: Vec<u8>) -> Self {
         Self {
             payload,
             msg_type: MessageType::Request,
+            correlation_id,
         }
     }
 
-    /// Create a response message.
-    pub fn response(payload: Vec<u8>) -> Self {
+    /// Create a response message, echoing the request's correlation ID.
+    pub fn response(correlation_id: u64, payload: Vec<u8>) -> Self {
         Self {
             payload,
             msg_type: MessageType::Response,
+            correlation_id,
         }
     }
 
@@ -148,11 +156,21 @@ mod tests {
 
     #[test]
     fn test_mixnet_message_roundtrip() {
-        let msg = MixnetMessage::request(b"hello".to_vec());
+        let msg = MixnetMessage::request(42, b"hello".to_vec());
         let bytes = msg.to_bytes();
         let parsed = MixnetMessage::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.payload, b"hello");
         assert_eq!(parsed.msg_type, MessageType::Request);
+        assert_eq!(parsed.correlation_id, 42);
+    }
+
+    #[test]
+    fn test_mixnet_message_without_correlation_id() {
+        // Senders that predate correlation IDs still parse, with ID 0.
+        let json = r#"{"payload":[104,105],"msg_type":"Request"}"#;
+        let parsed = MixnetMessage::from_bytes(json.as_bytes()).unwrap();
+        assert_eq!(parsed.payload, b"hi");
+        assert_eq!(parsed.correlation_id, 0);
     }
 
     #[test]

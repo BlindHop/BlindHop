@@ -68,6 +68,7 @@ fn test_mixnet_message_envelope() {
     let msg = MixnetMessage {
         msg_type: MessageType::Request,
         payload: payload.to_vec(),
+        correlation_id: 1,
     };
 
     let encoded = serde_json::to_vec(&msg).unwrap();
@@ -85,6 +86,7 @@ fn test_mixnet_message_response() {
     let msg = MixnetMessage {
         msg_type: MessageType::Response,
         payload: payload.to_vec(),
+        correlation_id: 1,
     };
 
     let encoded = serde_json::to_vec(&msg).unwrap();

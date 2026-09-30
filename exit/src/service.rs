@@ -65,7 +65,7 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
                     match backend.forward_rpc(&msg.payload).await {
                         Ok(response) => {
                             // Wrap response in MixnetMessage
-                            let reply = MixnetMessage::response(response);
+                            let reply = MixnetMessage::response(msg.correlation_id, response);
                             let reply_bytes = reply.to_bytes();
 
                             // Send back through the mixnet using sender tag (SURB reply)
@@ -88,8 +88,10 @@ pub async fn run_exit_service(target_rpc: &str) -> Result<()> {
                                     "message": format!("Exit service error: {}", e)
                                 }
                             });
-                            let reply =
-                                MixnetMessage::response(serde_json::to_vec(&error_json).unwrap());
+                            let reply = MixnetMessage::response(
+                                msg.correlation_id,
+                                serde_json::to_vec(&error_json).unwrap(),
+                            );
                             if let Some(tag) = sender {
                                 let _ = client.send_reply(tag, reply.to_bytes()).await;
                             }

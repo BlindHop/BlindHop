@@ -51,6 +51,7 @@ mod live_tests {
         let msg = MixnetMessage {
             msg_type: MessageType::Request,
             payload: serde_json::to_vec(&request).unwrap(),
+            correlation_id: 1,
         };
 
         let _encoded = serde_json::to_vec(&msg).unwrap();

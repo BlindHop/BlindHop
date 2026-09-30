@@ -62,18 +62,13 @@ impl Default for PrivacyInfo {
 /// Sphinx relay nodes (the approach used in the pre-pivot MVP).
 #[async_trait]
 pub trait MixnetTransport: Send + Sync {
-    /// Send data through the mixnet to the configured exit service.
+    /// Send a request through the mixnet to the configured exit service
+    /// and wait for the reply to that request.
     ///
     /// The data is typically a JSON-RPC request destined for a Substrate
-    /// full node. The transport wraps it in mixnet packets and routes
-    /// it through the network.
-    async fn send(&self, data: &[u8]) -> Result<()>;
-
-    /// Receive the next message from the mixnet.
-    ///
-    /// Blocks until a message is available. Returns the raw response
-    /// bytes (typically a JSON-RPC response from the exit service).
-    async fn recv(&self) -> Result<Vec<u8>>;
+    /// full node. Safe to call concurrently: each caller receives the
+    /// reply to its own request, whatever order replies arrive in.
+    async fn request(&self, data: &[u8]) -> Result<Vec<u8>>;
 
     /// Get current privacy mode information.
     fn privacy_info(&self) -> PrivacyInfo;

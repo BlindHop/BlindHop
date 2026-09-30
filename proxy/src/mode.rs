@@ -52,10 +52,7 @@ impl ActiveTransport {
     pub async fn send_and_recv(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self {
             Self::Direct { target_url } => send_direct(data, target_url).await,
-            Self::Nym { transport } => {
-                transport.send(data).await?;
-                transport.recv().await
-            }
+            Self::Nym { transport } => transport.request(data).await,
         }
     }
 
