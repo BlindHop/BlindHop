@@ -602,6 +602,7 @@ name = "blindhop-common"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "flate2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

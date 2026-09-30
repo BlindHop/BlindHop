@@ -96,7 +96,7 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
                     policy::code::BUSY,
                     "Exit is busy; retry shortly",
                 );
-                tokio::spawn(send_reply(sender, tag, msg.correlation_id, reply));
+                tokio::spawn(send_reply(sender, tag, msg.correlation_id, reply, false));
                 continue;
             };
 
@@ -106,7 +106,8 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
             tokio::spawn(async move {
                 let _permit = permit;
                 let reply = handle_request(backend.as_ref(), &msg.payload).await;
-                send_reply(sender, tag, msg.correlation_id, reply).await;
+                let compress = msg.accepts_compression;
+                send_reply(sender, tag, msg.correlation_id, reply, compress).await;
             });
         }
     }
@@ -131,14 +132,22 @@ async fn handle_request<B: ExitBackend + ?Sized>(backend: &B, payload: &[u8]) ->
     }
 }
 
-/// Send `payload` back to the client behind `tag` via its reply SURBs.
+/// Send `payload` back to the client behind `tag` via its reply SURBs,
+/// compressed if the client said it can read compressed replies (fewer
+/// packets, so fewer reply SURBs and a faster reply).
 async fn send_reply(
     sender: MixnetClientSender,
     tag: AnonymousSenderTag,
     correlation_id: u64,
     payload: Vec<u8>,
+    compress: bool,
 ) {
-    let bytes = MixnetMessage::response(correlation_id, payload).to_bytes();
+    let reply = MixnetMessage::response(correlation_id, payload);
+    let bytes = if compress {
+        reply.to_bytes_compressed()
+    } else {
+        reply.to_bytes()
+    };
     if let Err(e) = sender.send_reply(tag, bytes).await {
         tracing::warn!("Failed to send reply through mixnet: {}", e);
     }

@@ -87,6 +87,11 @@ pub struct MixnetMessage {
     /// one mixnet client, and replies can arrive in any order.
     #[serde(default)]
     pub correlation_id: u64,
+
+    /// Set on requests whose sender can read compressed responses. The exit
+    /// compresses a response only when its request set this.
+    #[serde(default)]
+    pub accepts_compression: bool,
 }
 
 /// Type of message flowing through the mixnet.
@@ -105,7 +110,14 @@ impl MixnetMessage {
             payload,
             msg_type: MessageType::Request,
             correlation_id,
+            accepts_compression: false,
         }
+    }
+
+    /// Mark a request as able to read compressed responses.
+    pub fn accepting_compression(mut self) -> Self {
+        self.accepts_compression = true;
+        self
     }
 
     /// Create a response message, echoing the request's correlation ID.
@@ -114,27 +126,55 @@ impl MixnetMessage {
             payload,
             msg_type: MessageType::Response,
             correlation_id,
+            accepts_compression: false,
         }
     }
 
     /// Serialize to bytes for transmission through the mixnet.
     ///
-    /// Wire format: `[type: u8][correlation_id: u64 big-endian][payload]`,
-    /// with type `0x01` = request, `0x02` = response. Every mixnet packet
-    /// costs a reply SURB, so the payload is sent as-is; the older JSON
+    /// Wire format: `[type: u8][correlation_id: u64 big-endian][payload]`.
+    /// The low nibble of `type` is `0x01` = request or `0x02` = response;
+    /// bit `0x40` (requests) = sender accepts compressed responses; bit
+    /// `0x80` = payload is deflate-raw compressed. Every mixnet packet costs
+    /// a reply SURB, so payloads are sent as raw bytes; the older JSON
     /// envelope encoded each byte as a decimal number, about 3.5× larger.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(FRAME_HEADER_LEN + self.payload.len());
-        out.push(match self.msg_type {
+        self.frame(self.type_byte(), &self.payload)
+    }
+
+    /// Like [`to_bytes`](Self::to_bytes), but deflate-compresses the payload
+    /// when that makes it smaller. Use only for replies to requests with
+    /// `accepts_compression`.
+    pub fn to_bytes_compressed(&self) -> Vec<u8> {
+        if self.payload.len() >= MIN_COMPRESS_BYTES
+            && let Some(compressed) = deflate(&self.payload)
+            && compressed.len() < self.payload.len()
+        {
+            return self.frame(self.type_byte() | FLAG_COMPRESSED, &compressed);
+        }
+        self.to_bytes()
+    }
+
+    fn type_byte(&self) -> u8 {
+        match self.msg_type {
+            MessageType::Request if self.accepts_compression => {
+                FRAME_TYPE_REQUEST | FLAG_ACCEPTS_COMPRESSION
+            }
             MessageType::Request => FRAME_TYPE_REQUEST,
             MessageType::Response => FRAME_TYPE_RESPONSE,
-        });
+        }
+    }
+
+    fn frame(&self, type_byte: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
+        out.push(type_byte);
         out.extend_from_slice(&self.correlation_id.to_be_bytes());
-        out.extend_from_slice(&self.payload);
+        out.extend_from_slice(payload);
         out
     }
 
-    /// Deserialize from bytes received from the mixnet.
+    /// Deserialize from bytes received from the mixnet, decompressing the
+    /// payload if needed (up to [`MAX_DECOMPRESSED_BYTES`]).
     ///
     /// Also accepts the older JSON envelope (`{"payload":[..],"msg_type":..}`),
     /// which starts with `{` and so can't be mistaken for a binary frame.
@@ -151,26 +191,73 @@ impl MixnetMessage {
             )));
         }
 
-        let msg_type = match data[0] {
-            FRAME_TYPE_REQUEST => MessageType::Request,
-            FRAME_TYPE_RESPONSE => MessageType::Response,
-            other => return Err(invalid(format!("Unknown mixnet frame type {other:#04x}"))),
+        let type_byte = data[0];
+        let unknown = type_byte & !(FRAME_TYPE_MASK | FLAG_ACCEPTS_COMPRESSION | FLAG_COMPRESSED);
+        let msg_type = match type_byte & FRAME_TYPE_MASK {
+            FRAME_TYPE_REQUEST if unknown == 0 => MessageType::Request,
+            FRAME_TYPE_RESPONSE if unknown == 0 => MessageType::Response,
+            _ => {
+                return Err(invalid(format!(
+                    "Unknown mixnet frame type {type_byte:#04x}"
+                )));
+            }
         };
         let mut id = [0u8; 8];
         id.copy_from_slice(&data[1..FRAME_HEADER_LEN]);
 
+        let body = &data[FRAME_HEADER_LEN..];
+        let payload = if type_byte & FLAG_COMPRESSED != 0 {
+            inflate(body, MAX_DECOMPRESSED_BYTES).map_err(invalid)?
+        } else {
+            body.to_vec()
+        };
+
         Ok(Self {
-            payload: data[FRAME_HEADER_LEN..].to_vec(),
+            payload,
             msg_type,
             correlation_id: u64::from_be_bytes(id),
+            accepts_compression: msg_type == MessageType::Request
+                && type_byte & FLAG_ACCEPTS_COMPRESSION != 0,
         })
     }
 }
 
 const FRAME_TYPE_REQUEST: u8 = 0x01;
 const FRAME_TYPE_RESPONSE: u8 = 0x02;
+const FRAME_TYPE_MASK: u8 = 0x0F;
+/// Request flag: the sender accepts compressed responses.
+const FLAG_ACCEPTS_COMPRESSION: u8 = 0x40;
+/// The payload is deflate-raw compressed.
+const FLAG_COMPRESSED: u8 = 0x80;
 /// Type byte + 8-byte correlation ID.
 const FRAME_HEADER_LEN: usize = 9;
+/// Payloads smaller than this aren't worth compressing.
+const MIN_COMPRESS_BYTES: usize = 1024;
+
+/// Largest payload a compressed frame may expand to. Guards against
+/// decompression bombs (a tiny frame that inflates to gigabytes).
+pub const MAX_DECOMPRESSED_BYTES: usize = 8 * 1024 * 1024;
+
+fn deflate(data: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut encoder =
+        flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data).ok()?;
+    encoder.finish().ok()
+}
+
+fn inflate(data: &[u8], limit: usize) -> std::result::Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::DeflateDecoder::new(data)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("Invalid compressed payload: {e}"))?;
+    if out.len() > limit {
+        return Err(format!("Decompressed payload exceeds {limit} bytes"));
+    }
+    Ok(out)
+}
 
 #[cfg(test)]
 mod tests {
@@ -235,6 +322,66 @@ mod tests {
         assert!(MixnetMessage::from_bytes(b"").is_err());
         assert!(MixnetMessage::from_bytes(&[0x01, 0, 0]).is_err());
         assert!(MixnetMessage::from_bytes(&[0x7F, 0, 0, 0, 0, 0, 0, 0, 1]).is_err());
+        // Unknown flag bits
+        assert!(MixnetMessage::from_bytes(&[0x21, 0, 0, 0, 0, 0, 0, 0, 1]).is_err());
+        // Compressed flag with garbage body
+        assert!(MixnetMessage::from_bytes(&[0x82, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn test_request_compression_flag() {
+        let bytes = MixnetMessage::request(3, b"{}".to_vec())
+            .accepting_compression()
+            .to_bytes();
+        assert_eq!(bytes[0], 0x41);
+        assert!(
+            MixnetMessage::from_bytes(&bytes)
+                .unwrap()
+                .accepts_compression
+        );
+
+        let plain = MixnetMessage::request(3, b"{}".to_vec()).to_bytes();
+        assert_eq!(plain[0], 0x01);
+        assert!(
+            !MixnetMessage::from_bytes(&plain)
+                .unwrap()
+                .accepts_compression
+        );
+    }
+
+    #[test]
+    fn test_large_response_is_compressed_and_roundtrips() {
+        // Hex text, like state_getMetadata results, compresses well.
+        let payload: Vec<u8> = (0..200_000u32)
+            .flat_map(|i| format!("{:02x}", (i * 7 % 251) as u8).into_bytes())
+            .collect();
+        let msg = MixnetMessage::response(9, payload.clone());
+        let compressed = msg.to_bytes_compressed();
+        assert_eq!(compressed[0], 0x82);
+        assert!(
+            compressed.len() < payload.len() / 2,
+            "{} vs {}",
+            compressed.len(),
+            payload.len()
+        );
+
+        let parsed = MixnetMessage::from_bytes(&compressed).unwrap();
+        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.correlation_id, 9);
+    }
+
+    #[test]
+    fn test_small_response_is_not_compressed() {
+        let bytes = MixnetMessage::response(1, b"{\"result\":1}".to_vec()).to_bytes_compressed();
+        assert_eq!(bytes[0], 0x02);
+    }
+
+    #[test]
+    fn test_decompression_bomb_is_rejected() {
+        let huge = vec![0u8; MAX_DECOMPRESSED_BYTES + 1];
+        let bomb = MixnetMessage::response(1, huge).to_bytes_compressed();
+        assert!(bomb.len() < 64 * 1024, "zeros compress to a tiny frame");
+        assert!(MixnetMessage::from_bytes(&bomb).is_err());
     }
 
     #[test]

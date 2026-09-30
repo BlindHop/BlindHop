@@ -52,6 +52,7 @@ mod live_tests {
             msg_type: MessageType::Request,
             payload: serde_json::to_vec(&request).unwrap(),
             correlation_id: 1,
+            accepts_compression: false,
         };
 
         let _encoded = serde_json::to_vec(&msg).unwrap();

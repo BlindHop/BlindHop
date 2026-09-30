@@ -8,7 +8,14 @@
 // event, since the exit replies with raw bytes.
 
 import { createNymMixnetClient } from '@nymproject/sdk-full-fat';
-import { FRAME_TYPE_REQUEST, FRAME_TYPE_RESPONSE, encodeFrame, decodeFrame } from './frame.js';
+import {
+    FRAME_TYPE_REQUEST,
+    FRAME_TYPE_RESPONSE,
+    SUPPORTS_COMPRESSION,
+    decodeFrame,
+    encodeFrame,
+    inflateRaw,
+} from './frame.js';
 
 const NYM_API_URL = 'https://validator.nymtech.net/api';
 
@@ -107,7 +114,10 @@ export class NymBrowserClient {
         }
 
         const id = this._nextId++;
-        const frame = encodeFrame(FRAME_TYPE_REQUEST, id, new TextEncoder().encode(jsonRpcString));
+        // Ask for compressed replies if this browser can decompress them.
+        const frame = encodeFrame(
+            FRAME_TYPE_REQUEST, id, new TextEncoder().encode(jsonRpcString), SUPPORTS_COMPRESSION,
+        );
 
         this._pending.set(id, setTimeout(() => {
             this._pending.delete(id);
@@ -181,10 +191,10 @@ export class NymBrowserClient {
 
     /**
      * Handle an incoming message from the Nym mixnet (SURB reply from exit).
-     * Decodes the frame, matches it to a pending request, and fires the
-     * response callback.
+     * Decodes the frame, matches it to a pending request, decompresses it if
+     * needed, and fires the response callback.
      */
-    _handleIncoming(bytes) {
+    async _handleIncoming(bytes) {
         const frame = decodeFrame(bytes);
         if (!frame) {
             console.warn('[NymBrowser] Ignoring message that is not a BlindHop frame');
@@ -203,8 +213,19 @@ export class NymBrowserClient {
         clearTimeout(timer);
         this._pending.delete(frame.correlationId);
 
+        // Decompress only replies we asked for (bounded by MAX_DECOMPRESSED_BYTES).
+        let payload = frame.payload;
+        if (frame.compressed) {
+            try {
+                payload = await inflateRaw(payload);
+            } catch (e) {
+                console.error(`[NymBrowser] Could not decompress reply ${frame.correlationId}:`, e);
+                return;
+            }
+        }
+
         if (this._onResponse) {
-            this._onResponse(new TextDecoder().decode(frame.payload));
+            this._onResponse(new TextDecoder().decode(payload));
         }
     }
 

@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+flate2.workspace = true
 
 [features]
 # Enables live Nym mainnet tests in tests/nym_integration.rs

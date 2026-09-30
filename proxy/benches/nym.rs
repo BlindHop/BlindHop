@@ -46,6 +46,7 @@ fn bench_mixnet_message_wrapping(c: &mut Criterion) {
                 msg_type: MessageType::Request,
                 payload: black_box(payload.to_vec()),
                 correlation_id: 1,
+                accepts_compression: false,
             };
             let encoded = serde_json::to_vec(&msg).unwrap();
             black_box(encoded);
@@ -56,6 +57,7 @@ fn bench_mixnet_message_wrapping(c: &mut Criterion) {
         msg_type: MessageType::Request,
         payload: payload.to_vec(),
         correlation_id: 1,
+        accepts_compression: false,
     };
     let encoded = serde_json::to_vec(&msg).unwrap();
 

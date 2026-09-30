@@ -278,7 +278,9 @@ impl MixnetTransport for NymTransport {
             id,
         };
 
-        let msg_bytes = MixnetMessage::request(id, data.to_vec()).to_bytes();
+        let msg_bytes = MixnetMessage::request(id, data.to_vec())
+            .accepting_compression()
+            .to_bytes();
         self.sender
             .send_plain_message(self.exit_recipient, msg_bytes)
             .await
