@@ -55,6 +55,12 @@ struct Cli {
     /// Nym gateway to connect through (auto-selected if not specified).
     #[arg(long)]
     nym_gateway: Option<String>,
+
+    /// Browser origin allowed to connect, e.g. https://demo.blindhop.wtf.
+    /// Repeat for several. Without it, only clients that send no Origin
+    /// header (smoldot, CLI tools) can connect; any web page is refused.
+    #[arg(long = "allowed-origin", value_name = "ORIGIN")]
+    allowed_origins: Vec<String>,
 }
 
 impl Cli {
@@ -108,6 +114,7 @@ async fn main() -> Result<()> {
         exit_backend,
         exit_address: cli.exit_address.clone(),
         nym_gateway: cli.nym_gateway.clone(),
+        allowed_origins: cli.allowed_origins.clone(),
         ..Default::default()
     };
 
@@ -122,6 +129,11 @@ async fn main() -> Result<()> {
     tracing::info!("  Exit backend: {}", exit_backend);
     if let Some(ref addr) = config.exit_address {
         tracing::info!("  Exit address: {}", addr);
+    }
+    if config.allowed_origins.is_empty() {
+        tracing::info!("  Origins:      none (browser pages are refused)");
+    } else {
+        tracing::info!("  Origins:      {}", config.allowed_origins.join(", "));
     }
 
     let listener = TcpListener::bind(config.listen_addr)

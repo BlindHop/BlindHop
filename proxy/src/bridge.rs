@@ -9,6 +9,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::{StatusCode, header::ORIGIN};
 
 use blindhop_common::config::{BlindHopConfig, PrivacyMode};
 use blindhop_common::metrics::MetricsCollector;
@@ -48,7 +50,19 @@ async fn handle_connection(
     transport: Arc<RwLock<ActiveTransport>>,
     metrics: Arc<MetricsCollector>,
 ) -> Result<()> {
-    let ws = tokio_tungstenite::accept_async(stream).await?;
+    let check_origin = |req: &Request, resp: Response| {
+        // A present but non-UTF-8 Origin is treated as disallowed.
+        let origin = req.headers().get(ORIGIN).map(|v| v.to_str().unwrap_or(""));
+        if origin_allowed(origin, &config.allowed_origins) {
+            Ok(resp)
+        } else {
+            tracing::warn!("Refused WebSocket connection from origin {:?}", origin);
+            let mut refusal = ErrorResponse::new(Some("Origin not allowed".to_string()));
+            *refusal.status_mut() = StatusCode::FORBIDDEN;
+            Err(refusal)
+        }
+    };
+    let ws = tokio_tungstenite::accept_hdr_async(stream, check_origin).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     while let Some(msg) = ws_rx.next().await {
@@ -155,6 +169,21 @@ async fn handle_connection(
     Ok(())
 }
 
+/// Whether a WebSocket handshake with this `Origin` header may connect.
+///
+/// Browsers attach `Origin` to every WebSocket handshake and apply no CORS
+/// checks, so without this any web page the user visits could drive the
+/// proxy (e.g. switch it to direct mode, exposing the user's IP).
+/// Non-browser clients send no `Origin` and are allowed.
+fn origin_allowed(origin: Option<&str>, allowed: &[String]) -> bool {
+    match origin {
+        None => true,
+        Some(origin) => allowed
+            .iter()
+            .any(|a| a.trim_end_matches('/').eq_ignore_ascii_case(origin)),
+    }
+}
+
 /// Handle a BlindHop control message (e.g., privacy mode change).
 async fn handle_control_message(
     control: &ControlMessage,
@@ -189,4 +218,47 @@ struct ControlMessage {
     method: String,
     #[serde(default)]
     params: Vec<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed() -> Vec<String> {
+        vec![
+            "https://demo.blindhop.wtf".to_string(),
+            "http://127.0.0.1:8080/".to_string(),
+        ]
+    }
+
+    #[test]
+    fn clients_without_origin_are_allowed() {
+        assert!(origin_allowed(None, &[]));
+    }
+
+    #[test]
+    fn unlisted_origins_are_refused() {
+        assert!(!origin_allowed(Some("https://evil.example"), &allowed()));
+        assert!(!origin_allowed(Some("https://evil.example"), &[]));
+        assert!(!origin_allowed(Some("null"), &allowed()));
+        assert!(!origin_allowed(Some(""), &allowed()));
+        assert!(!origin_allowed(
+            Some("https://demo.blindhop.wtf.evil.example"),
+            &allowed()
+        ));
+    }
+
+    #[test]
+    fn listed_origins_are_allowed() {
+        assert!(origin_allowed(
+            Some("https://demo.blindhop.wtf"),
+            &allowed()
+        ));
+        assert!(origin_allowed(
+            Some("https://DEMO.blindhop.wtf"),
+            &allowed()
+        ));
+        // A trailing slash in the configured origin is ignored.
+        assert!(origin_allowed(Some("http://127.0.0.1:8080"), &allowed()));
+    }
 }

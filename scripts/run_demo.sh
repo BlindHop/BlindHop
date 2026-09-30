@@ -59,6 +59,9 @@ PROXY_ARGS=(
     --listen "127.0.0.1:$PROXY_PORT"
     --target "$TARGET_RPC"
     --privacy-mode "$MODE"
+    # Let the locally served demo page connect; other web pages are refused.
+    --allowed-origin "http://127.0.0.1:$DEMO_PORT"
+    --allowed-origin "http://localhost:$DEMO_PORT"
 )
 
 if [[ -n "$EXIT_ADDRESS" ]]; then

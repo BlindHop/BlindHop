@@ -136,6 +136,13 @@ If `.exit_nym_address` exists (from the exit service), the proxy reads it automa
 ./scripts/run_proxy.sh   # auto-reads exit address
 ```
 
+The proxy refuses connections from web pages unless their origin is allowed, so a malicious site can't take control of it (for example, switching it to direct mode). Clients that aren't browsers, such as smoldot, are unaffected. To let the hosted demo use your local proxy:
+
+```bash
+cargo run -p blindhop-proxy -- --exit-address <EXIT_NYM_ADDRESS> \
+  --allowed-origin https://demo.blindhop.wtf
+```
+
 #### Run the Demo (All-in-One)
 
 ```bash

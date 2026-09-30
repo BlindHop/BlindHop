@@ -25,6 +25,12 @@ pub struct BlindHopConfig {
     /// Optional manual Nym gateway selection. Auto-selects if None.
     pub nym_gateway: Option<String>,
 
+    /// Browser origins allowed to connect to the local proxy (e.g.
+    /// `https://demo.blindhop.wtf`). Clients that send no `Origin` header
+    /// (smoldot, CLI tools) are always allowed; browsers always send one.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
     /// Query interval in milliseconds for the demo.
     #[serde(default = "default_query_interval")]
     pub query_interval_ms: u64,
@@ -43,6 +49,7 @@ impl Default for BlindHopConfig {
             exit_backend: ExitBackendType::ServiceProvider,
             exit_address: None,
             nym_gateway: None,
+            allowed_origins: Vec::new(),
             query_interval_ms: default_query_interval(),
         }
     }
