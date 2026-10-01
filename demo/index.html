@@ -36,11 +36,12 @@
                 <span class="nym-status-label">Nym Status</span>
                 <span class="nym-status-value" id="nym-status">Idle</span>
             </div>
-            <div class="nym-status-row">
-                <label class="local-proxy-option"
+            <div class="nym-status-row option-row">
+                <span class="nym-status-label">Local Proxy</span>
+                <label class="toggle"
                     title="Connect to a BlindHop proxy running on this computer (ws://127.0.0.1:9500). Your browser will ask for permission to access this device, and the proxy must be started with --allowed-origin for this site.">
                     <input type="checkbox" id="use-local-proxy">
-                    Use my local BlindHop proxy (advanced)
+                    <span>Use my local BlindHop proxy (advanced)</span>
                 </label>
             </div>
         </div>
@@ -173,20 +174,19 @@
             <button id="btn-stop" class="btn-secondary" onclick="stopQuerying()" disabled>
                 ⏹ Stop
             </button>
-            <div class="control-info">
-                <label>
-                    Interval:
+            <div class="control-options">
+                <label class="control-select">
+                    Interval
                     <select id="interval-select" onchange="updateInterval()">
                         <option value="2000">2s</option>
                         <option value="5000" selected>5s</option>
                         <option value="10000">10s</option>
                     </select>
                 </label>
-            </div>
-            <div class="control-info">
-                <label title="Also sends each query straight to the RPC node from your own IP address, so the node can see who you are. Off by default.">
+                <label class="toggle"
+                    title="Also sends each query straight to the RPC node from your own IP address, so the node can see who you are. Off by default.">
                     <input type="checkbox" id="compare-direct" onchange="toggleCompareDirect(this.checked)">
-                    Compare with direct connection (reveals your IP)
+                    <span>Compare with direct (reveals your IP)</span>
                 </label>
             </div>
         </div>

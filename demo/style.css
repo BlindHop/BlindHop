@@ -390,6 +390,12 @@ input[type="range"]::-moz-range-thumb {
     color: var(--accent-yellow);
 }
 
+.overhead-value.muted {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
 /* Chart */
 .chart-container {
     background: var(--bg-card);
@@ -430,6 +436,7 @@ input[type="range"]::-moz-range-thumb {
 /* Controls */
 .controls {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.75rem;
     align-items: center;
     margin-bottom: 2rem;
@@ -439,7 +446,8 @@ input[type="range"]::-moz-range-thumb {
 .btn-primary {
     background: linear-gradient(135deg, var(--accent-green), #00cc88);
     color: #000;
-    border: none;
+    border: 1px solid transparent;
+    line-height: 1.2;
     padding: 0.75rem 1.75rem;
     border-radius: var(--radius-sm);
     font-family: inherit;
@@ -454,6 +462,16 @@ input[type="range"]::-moz-range-thumb {
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
 
+/* Running: disabled but meant to be read, so full contrast. */
+.btn-primary.running,
+.btn-primary.running:disabled {
+    background: rgba(0, 229, 153, 0.1);
+    color: var(--accent-green);
+    border-color: rgba(0, 229, 153, 0.3);
+    opacity: 1;
+    cursor: default;
+}
+
 .btn-secondary {
     background: transparent;
     color: var(--text);
@@ -463,6 +481,7 @@ input[type="range"]::-moz-range-thumb {
     font-family: inherit;
     font-weight: 500;
     font-size: 0.85rem;
+    line-height: 1.2;
     cursor: pointer;
     transition: all 0.2s;
 }
@@ -470,11 +489,78 @@ input[type="range"]::-moz-range-thumb {
 .btn-secondary:hover { border-color: var(--text-dim); }
 .btn-secondary:disabled { opacity: 0.25; cursor: not-allowed; }
 
-.control-info {
+.control-options {
     flex: 1;
-    text-align: right;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.75rem 1.25rem;
+}
+
+.control-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
     color: var(--text-dim);
     font-size: 0.8rem;
+}
+
+/* Checkbox toggles */
+.toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+.toggle:hover { color: var(--text); }
+
+.toggle input[type="checkbox"] {
+    appearance: none;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    display: grid;
+    place-content: center;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-hover);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.toggle input[type="checkbox"]::after {
+    content: "";
+    width: 8px;
+    height: 4px;
+    border-left: 2px solid #000;
+    border-bottom: 2px solid #000;
+    transform: translateY(-1px) rotate(-45deg);
+    opacity: 0;
+}
+
+.toggle input[type="checkbox"]:checked {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+}
+
+.toggle input[type="checkbox"]:checked::after { opacity: 1; }
+
+/* Comparing with a direct connection reveals the user's IP: warn in red. */
+.toggle input#compare-direct:checked {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+.toggle input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent-purple);
+    outline-offset: 2px;
 }
 
 select {
@@ -522,6 +608,8 @@ footer a:hover { text-decoration: underline; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     header h1 { font-size: 1.8rem; }
     .logo-row { flex-wrap: wrap; justify-content: center; }
+    .controls button { flex: 1; }
+    .control-options { flex-basis: 100%; justify-content: space-between; }
 }
 
 /* ——— Connection Mode Badge ——— */
@@ -607,6 +695,8 @@ footer a:hover { text-decoration: underline; }
     gap: 1rem;
 }
 
+.option-row { margin-top: 0.8rem; }
+
 .nym-status-label {
     font-size: 0.8rem;
     font-weight: 600;
@@ -636,4 +726,19 @@ footer a:hover { text-decoration: underline; }
 .mark.disabled .mark-label {
     text-decoration: line-through;
     color: var(--text-dim);
+}
+
+/* Narrow screens: stack the exit card's label/value rows. Kept at the end
+   so it overrides the base row styles above (same specificity). */
+@media (max-width: 600px) {
+    .exit-address-container { padding: 1rem; }
+    .exit-address-row,
+    .nym-status-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.4rem;
+    }
+    .exit-address-row input { width: 100%; }
+    .exit-address-row label,
+    .nym-status-label { min-width: 0; }
 }

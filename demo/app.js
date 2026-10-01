@@ -561,6 +561,7 @@ async function startQuerying() {
 
         startBtn.textContent = '● Running';
         startBtn.classList.remove('connecting');
+        startBtn.classList.add('running');
         stopBtn.disabled = false;
 
         queryTimer = setInterval(queryAll, CONFIG.queryInterval);
@@ -587,6 +588,7 @@ function stopQuerying() {
 
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-start').textContent = '▶ Start Querying';
+    document.getElementById('btn-start').classList.remove('running');
     document.getElementById('btn-stop').disabled = true;
     updateStatus('disconnected');
     updateConnectionMode('detecting');
@@ -648,11 +650,19 @@ function updateUI() {
     document.getElementById('messages-sent').textContent = m.requests;
     document.getElementById('messages-recv').textContent = m.requests;
 
-    const directP50 = percentile(directLatencies, 50);
-    if (directP50 > 0 && p50 > 0) {
-        const overhead = p50 - directP50;
-        document.getElementById('overhead-value').textContent =
-            overhead >= 0 ? `+${formatLatency(overhead)}` : formatLatency(overhead);
+    const overheadEl = document.getElementById('overhead-value');
+    if (!compareDirect) {
+        // Measured only when the user opts into the direct comparison.
+        overheadEl.textContent = 'Off';
+        overheadEl.classList.add('muted');
+    } else {
+        overheadEl.classList.remove('muted');
+        const directP50 = percentile(directLatencies, 50);
+        if (directP50 > 0 && p50 > 0) {
+            const overhead = p50 - directP50;
+            overheadEl.textContent =
+                overhead >= 0 ? `+${formatLatency(overhead)}` : formatLatency(overhead);
+        }
     }
 }
 
