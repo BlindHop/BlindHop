@@ -68,10 +68,23 @@ let chart = null;
 
 // Metrics per mode
 let metrics = {
-    none: { latencies: [], requests: 0, lastBlock: null, chain: null },
-    fast: { latencies: [], requests: 0, lastBlock: null, chain: null },
-    full: { latencies: [], requests: 0, lastBlock: null, chain: null },
+    none: { latencies: [], sent: 0, requests: 0, lastBlock: null, chain: null },
+    fast: { latencies: [], sent: 0, requests: 0, lastBlock: null, chain: null },
+    full: { latencies: [], sent: 0, requests: 0, lastBlock: null, chain: null },
 };
+
+// Requests unanswered after this long are treated as lost (matches the
+// timeouts in nym-client.js and blindhop-proxy).
+const REQUEST_TIMEOUT_MS = 60_000;
+
+// Browsers throttle timers in hidden tabs (Chrome: about once a minute after
+// 5 minutes hidden), which makes measured latencies meaningless. Polling
+// pauses while the tab is hidden, and replies to requests that were in flight
+// while it was hidden aren't counted as latency samples.
+let lastHiddenAt = -Infinity;
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) lastHiddenAt = performance.now();
+});
 
 let directLatencies = [];
 // Also query the RPC node directly, for the latency comparison. Off by
@@ -367,11 +380,15 @@ function sendRpc(ws, method, params, source) {
         params: params || [],
     });
 
+    // Credit the reply to the mode it was sent in, even if the mode changes.
+    const mode = source === 'direct' ? 'none' : currentMode;
     pendingRequests[`${source}-${id}`] = {
         sentAt: performance.now(),
         source,
         method,
+        mode,
     };
+    metrics[mode].sent++;
 
     ws.send(request);
     return id;
@@ -402,7 +419,9 @@ async function sendViaNym(method, params) {
         sentAt: performance.now(),
         source: 'nym',
         method,
+        mode: currentMode,
     };
+    metrics[currentMode].sent++;
 
     await nymClient.sendRequest(request);
     return id;
@@ -419,19 +438,20 @@ function handleResponse(source, data) {
         const latency = performance.now() - pending.sentAt;
         delete pendingRequests[key];
 
-        const modeMetrics = metrics[currentMode];
+        const modeMetrics = metrics[pending.mode];
+        modeMetrics.requests++;
 
-        if (source === 'proxy' || source === 'nym') {
+        // A request in flight while the tab was hidden has a throttled,
+        // meaningless timing: count the reply, but don't chart it.
+        const timingValid = !document.hidden && pending.sentAt > lastHiddenAt;
+        if (timingValid) {
+            if (source === 'direct') {
+                directLatencies.push(latency);
+                if (directLatencies.length > 100) directLatencies.shift();
+            }
             modeMetrics.latencies.push(latency);
-            modeMetrics.requests++;
             if (modeMetrics.latencies.length > 100) modeMetrics.latencies.shift();
-            if (chart) chart.addPoint(currentMode, latency);
-        } else if (source === 'direct') {
-            directLatencies.push(latency);
-            if (directLatencies.length > 100) directLatencies.shift();
-            metrics.none.latencies.push(latency);
-            metrics.none.requests++;
-            if (chart) chart.addPoint('none', latency);
+            if (chart) chart.addPoint(pending.mode, latency);
         }
 
         // Parse chain data
@@ -481,7 +501,19 @@ function toggleCompareDirect(enabled) {
     syncDirectConnection();
 }
 
+/** Forget requests unanswered for longer than REQUEST_TIMEOUT_MS (lost). */
+function dropLostRequests() {
+    const cutoff = performance.now() - REQUEST_TIMEOUT_MS;
+    for (const [key, pending] of Object.entries(pendingRequests)) {
+        if (pending.sentAt < cutoff) delete pendingRequests[key];
+    }
+}
+
 function queryAll() {
+    dropLostRequests();
+    // Don't poll from a hidden tab (see lastHiddenAt).
+    if (document.hidden) return;
+
     if (currentMode === 'none') {
         // Direct mode — query Substrate directly
         if (directWs && directWs.readyState === WebSocket.OPEN) {
@@ -647,7 +679,7 @@ function updateUI() {
 
     document.getElementById('latency-p50').textContent = formatLatency(p50);
     document.getElementById('latency-p95').textContent = formatLatency(p95);
-    document.getElementById('messages-sent').textContent = m.requests;
+    document.getElementById('messages-sent').textContent = m.sent;
     document.getElementById('messages-recv').textContent = m.requests;
 
     const overheadEl = document.getElementById('overhead-value');
