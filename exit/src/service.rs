@@ -13,7 +13,9 @@ use nym_sdk::mixnet::{
 use blindhop_common::rpc::{MessageType, MixnetMessage};
 
 use crate::backend::{ExitBackend, SubstrateWsBackend};
-use crate::limiter::{Limiter, MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT};
+use crate::limiter::{
+    Limiter, MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT, MAX_WAIT_FOR_SLOT, MAX_WAITING,
+};
 use crate::policy;
 
 /// Run the exit service as a Nym Service Provider.
@@ -38,7 +40,7 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
     // Initialize the Substrate RPC backend
     let backend = Arc::new(SubstrateWsBackend::new(target_rpc.to_string()));
     let sender = client.split_sender();
-    let limiter = Limiter::new(MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT);
+    let limiter = Limiter::new(MAX_IN_FLIGHT, MAX_IN_FLIGHT_PER_CLIENT, MAX_WAITING);
     tracing::info!(
         "Exit service ready — forwarding to {} via {} backend",
         target_rpc,
@@ -97,41 +99,45 @@ pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
             };
             tracing::debug!("Received request ({} bytes) from mixnet", msg.payload.len());
 
-            let sender = sender.clone();
-            let Some(permit) = limiter.try_acquire(tag) else {
-                tracing::warn!("Exit busy; refusing a request");
-                let reply = policy::error_reply(
-                    &policy::request_id(&msg.payload),
-                    policy::code::BUSY,
-                    "Exit is busy; retry shortly",
-                );
-                tokio::spawn(send_reply(sender, tag, msg.correlation_id, reply, false));
-                continue;
-            };
-
             // Each request runs on its own task, so a slow one (e.g. a large
-            // state_getMetadata) doesn't hold up everyone else.
-            let backend = backend.clone();
+            // state_getMetadata) or one waiting for a slot doesn't hold up
+            // everyone else.
+            let (sender, backend, limiter) = (sender.clone(), backend.clone(), limiter.clone());
             tokio::spawn(async move {
-                let _permit = permit;
-                let reply = handle_request(backend.as_ref(), &msg.payload).await;
                 let compress = msg.accepts_compression;
+                // Policy first, so refused requests never wait or take a slot.
+                let request = match policy::validate(&msg.payload) {
+                    Ok(request) => request,
+                    Err(reply) => {
+                        tracing::debug!("Refused a request that failed policy checks");
+                        send_reply(sender, tag, msg.correlation_id, reply, compress).await;
+                        return;
+                    }
+                };
+                let Some(_permit) = limiter.acquire(tag, MAX_WAIT_FOR_SLOT).await else {
+                    tracing::warn!("Exit busy; refusing a request");
+                    let reply = policy::error_reply(
+                        &request.id,
+                        policy::code::BUSY,
+                        "Exit is busy; retry shortly",
+                    );
+                    send_reply(sender, tag, msg.correlation_id, reply, compress).await;
+                    return;
+                };
+                let reply = forward(backend.as_ref(), &msg.payload, &request).await;
                 send_reply(sender, tag, msg.correlation_id, reply, compress).await;
             });
         }
     }
 }
 
-/// Validate a request against the exit's policy, forward it, and build the
-/// reply payload. Errors carry the request's `id`.
-async fn handle_request<B: ExitBackend + ?Sized>(backend: &B, payload: &[u8]) -> Vec<u8> {
-    let request = match policy::validate(payload) {
-        Ok(request) => request,
-        Err(reply) => {
-            tracing::debug!("Refused a request that failed policy checks");
-            return reply;
-        }
-    };
+/// Forward a validated request and build the reply payload. Errors carry
+/// the request's `id`.
+async fn forward<B: ExitBackend + ?Sized>(
+    backend: &B,
+    payload: &[u8],
+    request: &policy::ValidRequest,
+) -> Vec<u8> {
     match backend.forward_rpc(payload, &request.id).await {
         Ok(response) => response,
         Err(e) => {
@@ -274,8 +280,13 @@ mod tests {
         }
     }
 
+    /// Same order as the exit's request task: policy, then forward.
     async fn run(backend: &FakeBackend, payload: &str) -> Value {
-        serde_json::from_slice(&handle_request(backend, payload.as_bytes()).await).unwrap()
+        let reply = match policy::validate(payload.as_bytes()) {
+            Ok(request) => forward(backend, payload.as_bytes(), &request).await,
+            Err(reply) => reply,
+        };
+        serde_json::from_slice(&reply).unwrap()
     }
 
     #[tokio::test]

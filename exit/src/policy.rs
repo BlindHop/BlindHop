@@ -135,18 +135,6 @@ pub fn validate(payload: &[u8]) -> Result<ValidRequest, Vec<u8>> {
     })
 }
 
-/// Best-effort `id` of a request, for replies to requests that were not
-/// validated (e.g. when the exit is busy).
-pub fn request_id(payload: &[u8]) -> Value {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Value::Null;
-    }
-    serde_json::from_slice::<Value>(payload)
-        .ok()
-        .and_then(|v| v.get("id").cloned())
-        .unwrap_or(Value::Null)
-}
-
 /// Build a JSON-RPC error reply.
 pub fn error_reply(id: &Value, code: i64, message: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -233,11 +221,5 @@ mod tests {
         let r = rejected(&big);
         assert_eq!(r["error"]["code"], code::INVALID_REQUEST);
         assert_eq!(r["id"], Value::Null);
-    }
-
-    #[test]
-    fn request_id_is_best_effort() {
-        assert_eq!(request_id(br#"{"id":9,"method":"x"}"#), json!(9));
-        assert_eq!(request_id(b"garbage"), Value::Null);
     }
 }
