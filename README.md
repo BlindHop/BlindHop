@@ -143,6 +143,8 @@ cargo run -p blindhop-proxy -- --exit-address <EXIT_NYM_ADDRESS> \
   --allowed-origin https://demo.blindhop.wtf
 ```
 
+Then tick **Use my local BlindHop proxy** in the demo before pressing Start. The demo only contacts `127.0.0.1` when that box is ticked, and your browser will ask for permission to access this device.
+
 #### Run the Demo (All-in-One)
 
 ```bash

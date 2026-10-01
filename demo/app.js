@@ -107,7 +107,16 @@ function testWebSocket(url, timeoutMs) {
  * Detect whether native blindhop-proxy is running.
  * Returns 'native' if proxy found, 'browser' otherwise.
  */
+/**
+ * Use the native proxy only if the user opted in. Probing 127.0.0.1 from a
+ * public page triggers the browser's "access other apps and services on this
+ * device" prompt and can be used for fingerprinting, so by default the demo
+ * never touches localhost and uses the in-browser Nym client.
+ */
 async function detectConnectionMode() {
+    if (!useLocalProxy()) {
+        return 'browser';
+    }
     updateConnectionMode('detecting');
     try {
         await testWebSocket(CONFIG.proxyUrl, CONFIG.proxyDetectTimeout);
@@ -326,7 +335,7 @@ function connectDirect() {
 
 async function connectNymBrowser() {
     const exitInput = document.getElementById('exit-address');
-    const exitAddress = exitInput ? exitInput.value.trim() : CONFIG.defaultExitAddress;
+    const exitAddress = exitInput?.value.trim() || CONFIG.defaultExitAddress;
 
     if (!exitAddress) {
         throw new Error('Exit service Nym address is required. Enter it in the Exit Address field.');
@@ -649,17 +658,46 @@ function updateUI() {
 
 // ——— Exit Address Persistence ———
 
+// Per-browser preferences. Storage can be unavailable (private windows,
+// blocked site data), so failures fall back to the defaults.
+function loadPref(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function savePref(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // Not persisted; the page still works.
+    }
+}
+
 function initExitAddress() {
     const input = document.getElementById('exit-address');
     if (!input) return;
 
-    const saved = localStorage.getItem('blindhop_exit_address');
-    if (saved) {
-        input.value = saved;
-    }
+    // A saved address (e.g. a user's own exit) wins; otherwise the default.
+    input.value = loadPref('blindhop_exit_address') || CONFIG.defaultExitAddress;
 
     input.addEventListener('change', () => {
-        localStorage.setItem('blindhop_exit_address', input.value.trim());
+        savePref('blindhop_exit_address', input.value.trim());
+    });
+}
+
+function useLocalProxy() {
+    return document.getElementById('use-local-proxy')?.checked === true;
+}
+
+function initLocalProxyOption() {
+    const checkbox = document.getElementById('use-local-proxy');
+    if (!checkbox) return;
+    checkbox.checked = loadPref('blindhop_use_local_proxy') === '1';
+    checkbox.addEventListener('change', () => {
+        savePref('blindhop_use_local_proxy', checkbox.checked ? '1' : '0');
     });
 }
 
@@ -675,4 +713,5 @@ document.addEventListener('DOMContentLoaded', () => {
     chart = new LatencyChart('latency-chart');
     initSlider();
     initExitAddress();
+    initLocalProxyOption();
 });
