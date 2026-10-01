@@ -16,7 +16,7 @@ const CONFIG = {
     directTarget: 'wss://sys.turboflakes.io/asset-hub-paseo',
     queryInterval: 5000,
     proxyDetectTimeout: 2000,
-    defaultExitAddress: '', // Set after deploying exit service
+    defaultExitAddress: 'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@ES962rrdsZNhE15dKYnkCtMSPJZZz2B411GUmpyyxkp7', // Deployed exit service node address
 };
 
 // Privacy modes mapped to slider positions
