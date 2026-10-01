@@ -20,6 +20,7 @@ mod policy;
 mod service;
 mod substrate_rpc;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -55,6 +56,9 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| cli.log_level.clone().into()),
         )
+        // Colour codes only for a terminal; under systemd they end up in
+        // the journal as escape sequences.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     tracing::info!("Starting BlindHop Exit Service");

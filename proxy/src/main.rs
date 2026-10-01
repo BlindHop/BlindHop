@@ -17,6 +17,7 @@ mod bridge;
 mod mode;
 mod nym_transport;
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
@@ -101,6 +102,9 @@ async fn main() -> Result<()> {
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        // Colour codes only for a terminal; under systemd they end up in
+        // the journal as escape sequences.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     let cli = Cli::parse();
