@@ -78,7 +78,7 @@ Keep logging at `info` (the default in the unit); debug logs record request size
 
 ### Limits
 
-The unit caps the exit at `MemoryMax=320M` and `CPUQuota=50%`, since the server is shared. The exit itself handles at most 16 requests at once (8 per client) and answers "busy" beyond that, forwards only an allowlist of read-only methods plus `author_submitExtrinsic`, and caps responses at 4 MiB. In load testing, peak memory was ~100 MB; the worst case at these limits is estimated at ~240 MB.
+The unit caps the exit at `MemoryMax=320M` and one CPU core (`CPUQuota=100%`), with `CPUWeight=50` so other services on the server get twice its CPU share when they compete. The exit itself handles at most 16 requests at once (8 per client) and answers "busy" beyond that, forwards only an allowlist of read-only methods plus `author_submitExtrinsic`, and caps responses at 4 MiB. In load testing, peak memory was ~100 MB; the worst case at these limits is estimated at ~240 MB.
 
 To change a unit setting without editing the file: `sudo systemctl edit blindhop-exit`, then add e.g.
 

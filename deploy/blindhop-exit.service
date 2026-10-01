@@ -30,7 +30,12 @@ TimeoutStopSec=30
 # Resource limits (the VPS is shared). Worst case at the exit's limits is
 # ~240 MB (16 requests in flight x 4 MiB responses), so 320M leaves margin.
 MemoryMax=320M
-CPUQuota=50%
+# At most one core (100% = one CPU). Compressing and Sphinx-encrypting
+# replies is CPU-heavy: at 50% a burst of large requests was throttled in
+# 909 of 931 scheduling periods on a 2-core server. CPUWeight=50 (default
+# 100) gives other services twice the exit's share when they compete.
+CPUQuota=100%
+CPUWeight=50
 TasksMax=512
 LimitNOFILE=4096
 
