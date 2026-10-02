@@ -3,10 +3,13 @@
 #
 #   First install:  sudo ./deploy/install-exit.sh --target-rpc wss://your-full-node
 #   Upgrade:        sudo ./deploy/install-exit.sh
+#   Change gateway: sudo ./deploy/install-exit.sh --gateway <identity key>
 #
 # Run build-exit.sh first. Re-running this script upgrades the binary and
 # unit and restarts the service; the exit's keys (and so its Nym address)
-# are kept in /var/lib/blindhop-exit.
+# are kept in /var/lib/blindhop-exit. Settings not given are kept from the
+# last install. Changing the gateway changes the part of the Nym address
+# after the "@"; update the demo and proxy users afterwards.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,17 +21,19 @@ ENV_FILE=/etc/blindhop-exit.env
 UNIT_DST=/etc/systemd/system/$SERVICE.service
 STATE_DIR=/var/lib/blindhop-exit
 TARGET_RPC=""
+GATEWAY=""
 
 die() { echo "Error: $*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target-rpc) TARGET_RPC="${2:-}"; shift 2 ;;
+        --gateway)    GATEWAY="${2:-}"; shift 2 ;;
         --binary)     BIN_SRC="${2:-}"; shift 2 ;;
         -h|--help)    usage 0 ;;
         *)            echo "Unknown option: $1" >&2; usage 1 ;;
@@ -45,6 +50,9 @@ if [[ -n "$TARGET_RPC" ]]; then
 elif [[ ! -f "$ENV_FILE" ]]; then
     die "first install needs --target-rpc <wss://your-full-node>"
 fi
+if [[ -n "$GATEWAY" && ! "$GATEWAY" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
+    die "--gateway must be a gateway's base58 identity key"
+fi
 
 # --- Service user (no login, no home) ---
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -53,15 +61,26 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     echo "Created system user $SERVICE_USER"
 fi
 
-# --- Configuration ---
-if [[ -n "$TARGET_RPC" ]]; then
+# --- Configuration (settings not given keep their current values) ---
+if [[ -n "$TARGET_RPC" || -n "$GATEWAY" ]]; then
+    if [[ -f "$ENV_FILE" ]]; then
+        [[ -n "$TARGET_RPC" ]] || TARGET_RPC="$(sed -n 's/^TARGET_RPC=//p' "$ENV_FILE")"
+        [[ -n "$GATEWAY" ]] || GATEWAY="$(sed -n 's/^BLINDHOP_EXIT_GATEWAY=//p' "$ENV_FILE")"
+    fi
     install -m 0644 /dev/null "$ENV_FILE"
     cat > "$ENV_FILE" <<EOF
 # Substrate full node the BlindHop exit forwards to. It sees every query the
 # exit forwards (but not who sent it), so use a node you trust.
 TARGET_RPC=$TARGET_RPC
 EOF
-    echo "Wrote $ENV_FILE (TARGET_RPC=$TARGET_RPC)"
+    if [[ -n "$GATEWAY" ]]; then
+        cat >> "$ENV_FILE" <<EOF
+# Nym gateway the exit connects through (identity key). The exit's Nym
+# address ends in it. Remove this line to keep whichever gateway it has.
+BLINDHOP_EXIT_GATEWAY=$GATEWAY
+EOF
+    fi
+    echo "Wrote $ENV_FILE (TARGET_RPC=$TARGET_RPC${GATEWAY:+, gateway $GATEWAY})"
 fi
 
 # --- Binary (replaced atomically) and unit ---

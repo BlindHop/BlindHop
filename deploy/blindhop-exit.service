@@ -10,6 +10,7 @@ User=blindhop
 Group=blindhop
 
 # TARGET_RPC: the Substrate full node the exit forwards to (see install-exit.sh).
+# BLINDHOP_EXIT_GATEWAY (optional): the Nym gateway's identity key.
 EnvironmentFile=/etc/blindhop-exit.env
 Environment=RUST_LOG=info
 

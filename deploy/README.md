@@ -71,6 +71,7 @@ The running exit gets SIGTERM and disconnects from Nym cleanly before the new bi
 | Logs | `journalctl -u blindhop-exit -f` |
 | Address | `sudo cat /var/lib/blindhop-exit/.exit_nym_address` |
 | Change full node | `sudo ./deploy/install-exit.sh --target-rpc wss://...` |
+| Change Nym gateway | `sudo ./deploy/install-exit.sh --gateway <identity key>` (changes the address after `@`; update the demo) |
 | Remove (keep keys) | `sudo ./deploy/uninstall-exit.sh` |
 | Remove everything | `sudo ./deploy/uninstall-exit.sh --purge` |
 

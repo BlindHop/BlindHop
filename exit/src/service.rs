@@ -23,10 +23,14 @@ use crate::policy;
 /// Connects to the Nym mixnet, announces our address, then loops
 /// receiving messages, forwarding JSON-RPC requests to the Substrate
 /// full node, and sending responses back through the mixnet.
-pub async fn run_exit_service(target_rpc: &str, data_dir: &Path) -> Result<()> {
+pub async fn run_exit_service(
+    target_rpc: &str,
+    data_dir: &Path,
+    gateway: Option<String>,
+) -> Result<()> {
     tracing::info!("Connecting to Nym mixnet as Service Provider...");
 
-    let mut client = connect_persistent(data_dir).await?;
+    let mut client = connect_persistent(data_dir, gateway).await?;
 
     let our_address = client.nym_address().to_string();
     tracing::info!("Exit service registered on Nym network");
@@ -186,16 +190,21 @@ async fn send_reply(
 
 /// Connect with keys stored in `data_dir`, so the exit's Nym address stays
 /// the same across restarts. Keys are generated on first run.
-async fn connect_persistent(data_dir: &Path) -> Result<MixnetClient> {
+async fn connect_persistent(data_dir: &Path, gateway: Option<String>) -> Result<MixnetClient> {
     create_private_dir(data_dir)?;
 
     let storage_paths = StoragePaths::new_from_dir(data_dir)
         .with_context(|| format!("Invalid data dir {}", data_dir.display()))?;
 
-    MixnetClientBuilder::new_with_default_storage(storage_paths)
+    let mut builder = MixnetClientBuilder::new_with_default_storage(storage_paths)
         .await
         .context("Failed to open Nym client storage")?
-        .debug_config(debug_config())
+        .debug_config(debug_config());
+    if let Some(gateway) = gateway {
+        tracing::info!("  Requested gateway: {}", gateway);
+        builder = builder.request_gateway(gateway);
+    }
+    builder
         .build()
         .context("Failed to build Nym client")?
         .connect_to_mixnet()

@@ -42,6 +42,13 @@ struct Cli {
     #[arg(long, default_value = ".blindhop-exit")]
     data_dir: PathBuf,
 
+    /// Identity key of the Nym gateway to use. The exit's address ends in
+    /// its gateway, so changing this changes the address (the identity keys
+    /// are kept, and earlier registrations stay stored). Without it, the
+    /// exit keeps its current gateway, or picks one at random on first run.
+    #[arg(long, env = "BLINDHOP_EXIT_GATEWAY")]
+    gateway: Option<String>,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -66,5 +73,5 @@ async fn main() -> Result<()> {
     tracing::info!("  Data dir:   {}", cli.data_dir.display());
 
     // Start the Nym service provider
-    service::run_exit_service(&cli.target_rpc, &cli.data_dir).await
+    service::run_exit_service(&cli.target_rpc, &cli.data_dir, cli.gateway).await
 }
