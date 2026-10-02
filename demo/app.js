@@ -16,7 +16,12 @@ const CONFIG = {
     directTarget: 'wss://sys.turboflakes.io/asset-hub-paseo',
     queryInterval: 5000,
     proxyDetectTimeout: 2000,
-    defaultExitAddress: 'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@ES962rrdsZNhE15dKYnkCtMSPJZZz2B411GUmpyyxkp7', // Deployed exit service node address
+    defaultExitAddress: 'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@Cxw5sHpFcn45k3Z2oEgBdv8EjNNhxDknTaXBNrne3SFZ', // Deployed exit service node address
+    // Earlier defaults. A saved address equal to one of these was the default
+    // at the time, not the user's own exit, so it's replaced by the current one.
+    retiredExitAddresses: [
+        'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@ES962rrdsZNhE15dKYnkCtMSPJZZz2B411GUmpyyxkp7',
+    ],
 };
 
 // Privacy modes mapped to slider positions
@@ -723,7 +728,12 @@ function initExitAddress() {
     if (!input) return;
 
     // A saved address (e.g. a user's own exit) wins; otherwise the default.
-    input.value = loadPref('blindhop_exit_address') || CONFIG.defaultExitAddress;
+    let saved = loadPref('blindhop_exit_address');
+    if (CONFIG.retiredExitAddresses.includes(saved)) {
+        saved = null;
+        savePref('blindhop_exit_address', '');
+    }
+    input.value = saved || CONFIG.defaultExitAddress;
 
     input.addEventListener('change', () => {
         savePref('blindhop_exit_address', input.value.trim());
