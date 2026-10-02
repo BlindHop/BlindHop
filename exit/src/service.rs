@@ -2,12 +2,13 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use nym_sdk::mixnet::{
-    AnonymousSenderTag, MixnetClient, MixnetClientBuilder, MixnetClientSender, MixnetMessageSender,
-    StoragePaths,
+    AnonymousSenderTag, IncludedSurbs, MixnetClient, MixnetClientBuilder, MixnetClientSender,
+    MixnetMessageSender, StoragePaths,
 };
 
 use blindhop_common::rpc::{MessageType, MixnetMessage};
@@ -59,9 +60,40 @@ pub async fn run_exit_service(
     // process could stay up but dead, and systemd would never restart it.
     let client_failed = client.cancellation_token();
 
+    // The SDK can also lose its gateway connection without shutting down
+    // (seen after a gateway "Internal gateway storage error"): the process
+    // stays up but nothing arrives or leaves. To catch that, the exit sends
+    // itself a probe through the mixnet every PROBE_INTERVAL and exits if
+    // none has come back for PROBE_TIMEOUT, so systemd restarts it.
+    let self_address = *client.nym_address();
+    let mut probe_timer = tokio::time::interval(PROBE_INTERVAL);
+    probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_probe = Instant::now();
+
     // Main message processing loop
     loop {
         let messages = tokio::select! {
+            _ = probe_timer.tick() => {
+                if last_probe.elapsed() > PROBE_TIMEOUT {
+                    tracing::error!(
+                        "No liveness probe came back through the mixnet in {} s; exiting",
+                        last_probe.elapsed().as_secs()
+                    );
+                    anyhow::bail!("Nym connection stopped delivering messages");
+                }
+                // On its own task: if the connection is stuck, sending can
+                // block, and the loop must keep running to notice.
+                let sender = sender.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = sender
+                        .send_message(self_address, PROBE, IncludedSurbs::ExposeSelfAddress)
+                        .await
+                    {
+                        tracing::warn!("Failed to send liveness probe: {}", e);
+                    }
+                });
+                continue;
+            }
             _ = &mut shutdown => {
                 // A clean disconnect lets the SDK flush its reply-SURB store;
                 // otherwise it's discarded as corrupted on the next start.
@@ -84,6 +116,11 @@ pub async fn run_exit_service(
         };
 
         for received in messages {
+            if received.sender_tag.is_none() && received.message == PROBE {
+                tracing::debug!("Liveness probe came back");
+                last_probe = Instant::now();
+                continue;
+            }
             // Replies travel on the sender's reply SURBs; without a tag there
             // is no way to answer, so don't spend any work on the message.
             let Some(tag) = received.sender_tag else {
@@ -236,6 +273,16 @@ fn debug_config() -> nym_sdk::DebugConfig {
 }
 
 const MAX_REPLY_SURB_REQUEST: u32 = 500;
+
+/// Message the exit sends itself to check its mixnet connection still works.
+/// Anyone could send the same bytes, but only while messages are getting
+/// through, which is all the probe checks.
+const PROBE: &[u8] = b"blindhop-exit-liveness-probe";
+/// How often to send a probe. A probe is one small packet each way.
+const PROBE_INTERVAL: Duration = Duration::from_secs(60);
+/// How long without a probe arriving before the exit gives up. Allows for a
+/// couple of lost probes and the slow trips seen during gateway hiccups.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Create `dir` if needed, readable only by the owner (it holds private keys).
 fn create_private_dir(dir: &Path) -> Result<()> {
