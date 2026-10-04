@@ -19,20 +19,20 @@ Updated timeline reflecting the Nym mixnet pivot.
 | 7–8 | `blindhop-exit`: Nym SP, ExitBackend trait, Substrate forwarding | Demo UI: privacy slider, latency chart, metrics |
 | 9–10 | Integration testing, bug fixes, CI updates | Documentation, README, Docusaurus site updates |
 
-**✅ Delivered:** 3-crate workspace, 14 unit tests, demo UI with privacy slider
+**✅ Delivered:** 3-crate workspace, 63 offline tests across all crates, in-browser Nym Wasm client, upstream connection pooling, binary framing with raw deflate compression, production deployment scripts (`deploy/`), and live demo UI.
 
 ---
 
 ## Phase 2: Browser Wasm + Advanced Exit (Weeks 11–18)
 
-**Goal:** Browser-only mode, SOCKS5 fallback, connection pooling, Nym credential support.
+**Goal:** Production hardening, SOCKS5 fallback, Nym credential support, and smoldot npm wrapper.
 
 | Week | Backend | Frontend / Integration |
 |---|---|---|
-| 11–12 | Nym Wasm client investigation, browser WebSocket compatibility | smoldot PlatformRef wrapper design |
-| 13–14 | SOCKS5 exit fallback implementation | Browser demo with Wasm Nym client |
-| 15–16 | Multi-exit load balancing, connection pooling at exit | Latency benchmarks, overhead analysis |
-| 17–18 | Nym credential (zk-nym) integration for bandwidth tokens | Performance optimization, stress testing |
+| 11–12 | SOCKS5 exit fallback investigation | smoldot PlatformRef wrapper design |
+| 13–14 | Multi-exit load balancing and health checks | Latency benchmarks & stress testing |
+| 15–16 | Nym credential (zk-nym) bandwidth tokens | Standalone `@blindhop/browser` SDK package |
+| 17–18 | Multi-chain routing across parachains | Performance optimizations |
 
 ---
 

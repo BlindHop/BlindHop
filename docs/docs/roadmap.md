@@ -9,33 +9,37 @@ title: Roadmap
 **Duration:** 10 weeks | **Status:** ✅ Complete
 
 - [x] Architecture pivot: custom Sphinx → Nym SDK integration
-- [x] `blindhop-common`: MixnetTransport trait, config, metrics, RPC types
-- [x] `blindhop-proxy`: Nym client, WS bridge, privacy mode switching
-- [x] `blindhop-exit`: Nym Service Provider, Substrate RPC forwarding
-- [x] Demo UI with privacy slider (None/Fast/Full)
-- [x] Unit tests (14 passing), CI/CD pipeline
+- [x] `blindhop-common`: MixnetTransport trait (`request()`), config, metrics, binary framing with deflate compression
+- [x] `blindhop-proxy`: Ephemeral Nym client, WS bridge with browser origin check, privacy mode switching
+- [x] `blindhop-exit`: Hardened Nym Service Provider with persistent keys, allowlist policy, limiter, and connection pooling
+- [x] In-browser mixnet client: `@nymproject/sdk-full-fat` Wasm client in demo UI
+- [x] Production deployment: systemd service unit, key backups, and install scripts in `deploy/`
+- [x] Automated test suite (63 offline tests across the workspace), CI/CD pipeline, dependency audit
 
 **Milestone acceptance:**
 - Workspace builds and tests pass
 - Privacy slider switches between modes at runtime
-- Exit service forwards JSON-RPC to Substrate full node
+- Exit service forwards JSON-RPC to Substrate full node with allowlist and concurrency protections
+- Browser demo works without native proxy
 
 ---
 
-## Phase 2: Browser Wasm + Advanced Exit Routing
-**Duration:** 8 weeks | **Status:** 🔲 Planned
+## Phase 2: Advanced Routing + Smoldot SDK
+**Duration:** 8 weeks | **Status:** 🔲 In Progress
 
-- [ ] Browser-only mode: Nym Wasm client for in-browser operation
+- [x] In-browser Wasm mixnet client (delivered in MVP demo)
+- [x] Connection pooling: reuse WebSocket connections at exit (`UpstreamPool`)
+- [ ] Live integration tests: implement the `nym_integration` and `e2e_chain` stubs and run them nightly against a test exit
+- [ ] Standalone `@blindhop/browser` SDK package
 - [ ] SOCKS5 exit fallback: use Nym's built-in SOCKS5 proxy
-- [ ] Multi-exit load balancing: route to multiple exit services
-- [ ] Connection pooling: reuse WebSocket connections at exit
+- [ ] Multi-exit load balancing & automatic failover
 - [ ] Nym credential integration: zk-nym bandwidth tokens
-- [ ] smoldot PlatformRef wrapper for seamless integration
+- [ ] smoldot PlatformRef wrapper for zero-config integration
 
 **Milestone acceptance:**
-- Browser demo works without native proxy
 - SOCKS5 fallback operational when dedicated exit is unavailable
-- Latency benchmarks documented
+- Standalone browser SDK published to npm
+- Multi-exit routing operational
 
 ---
 

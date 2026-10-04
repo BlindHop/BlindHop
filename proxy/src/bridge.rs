@@ -50,6 +50,9 @@ async fn handle_connection(
     transport: Arc<RwLock<ActiveTransport>>,
     metrics: Arc<MetricsCollector>,
 ) -> Result<()> {
+    // The signature is fixed by tungstenite's handshake `Callback` trait
+    // (`Result<Response, ErrorResponse>`), so the error can't be boxed.
+    #[allow(clippy::result_large_err)]
     let check_origin = |req: &Request, resp: Response| {
         // A present but non-UTF-8 Origin is treated as disallowed.
         let origin = req.headers().get(ORIGIN).map(|v| v.to_str().unwrap_or(""));

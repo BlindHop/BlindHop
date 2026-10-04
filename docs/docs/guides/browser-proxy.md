@@ -37,17 +37,22 @@ The `@nymproject/sdk-full-fat` npm package bundles:
 
 All of this runs in a **Web Worker** to keep the main UI thread responsive.
 
-## Auto-Detection
+## Connecting to the Mixnet
 
-When you click "Start Querying", the demo automatically:
+When you open the demo, it connects directly through the mixnet without requiring any local software installation:
 
-1. **Probes** `ws://localhost:9500` for a native `blindhop-proxy`
-2. If found → uses native proxy (full 3-mode support)
-3. If not found → starts the browser Nym Wasm client (2-mode: None/Full)
+1. **In-Browser Client (Default)**: Runs the Nym Wasm client directly inside your browser. By default, the demo never touches `localhost` and never reveals your IP address to full nodes.
+2. **Local Proxy (Advanced Opt-in)**: If you tick the **"Use my local BlindHop proxy"** checkbox, the demo will attempt to connect to `ws://127.0.0.1:9500`. (Note: because browsers attach `Origin` headers, your local proxy must be launched with `--allowed-origin https://demo.blindhop.wtf`).
 
 The connection mode badge in the header shows which mode is active:
-- 🖥️ **Native Proxy** — blue badge
-- 🌐 **Browser (Nym Wasm)** — purple badge
+- 🌐 **Browser (Nym Wasm)** — purple badge (default)
+- 🖥️ **Native Proxy** — blue badge (when local proxy is opted in and connected)
+
+### Privacy Protections in the Browser Demo
+
+- **No Silent Fallback (Fail-Closed)**: If the Nym client fails to initialize or connect, querying stops with an error. It **never** silently falls back to a direct connection that would reveal your IP address.
+- **Opt-in Direct Comparison**: The "Compare with direct" toggle (for measuring mixnet latency overhead vs a direct RPC query) is **off by default** and clearly flagged, as sending comparison queries connects directly to the Substrate full node from your IP.
+- **Decompression Support**: When the browser supports `DecompressionStream('deflate-raw')`, the browser client signals `0x40` (accepts compression) and transparently decompresses large responses (e.g. `state_getMetadata`), bounded by an 8 MiB decompression limit.
 
 ## Limitations vs Native Proxy
 

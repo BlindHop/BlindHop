@@ -15,7 +15,7 @@ BlindHop is a middleware system that wraps the [smoldot](https://github.com/smol
 - 🕵️ **Metadata privacy** — storage queries, block requests, and chain state reads are all anonymized
 - 🌐 **Production mixnet** — 500+ Nym mix nodes, battle-tested Sphinx packet format, Loopix cover traffic
 - ⚡ **Privacy slider** — users choose between None (direct), Fast (2-hop), and Full (5-hop mixnet)
-- 🔧 **Modular exit** — dedicated service provider or Nym SOCKS5 fallback
+- 🔧 **Hardened exit** — dedicated Nym service provider with a read-only method allowlist, size and concurrency limits, and a stable address (SOCKS5 fallback planned)
 - 🌐 **Chain-agnostic** — works with Kusama, Polkadot, parachains, and solochains
 
 ## Quick Start
@@ -76,11 +76,11 @@ graph TB
 
 ## Privacy Modes
 
-| Mode | Hops | Cover Traffic | Latency Overhead | IP Hidden | Metadata Private |
+| Mode | Hops | Cover Traffic | Round-trip (p50, measured) | IP Hidden | Metadata Private |
 |------|------|--------------|------------------|-----------|-----------------|
-| **None** | 0 | ✗ | 0ms | ✗ | ✗ |
-| **Fast** | 2 | ✗ | ~200-500ms | ✓ | ✗ |
-| **Full** | 5 | ✓ (Loopix) | ~1-3s | ✓ | ✓ |
+| **None** | 0 | ✗ | RPC node latency | ✗ | ✗ |
+| **Fast** | 2 (gateway → gateway) | ✗ | ~1.4–1.8 s | ✓ | ✗ |
+| **Full** | 5 | ✓ (Loopix) | ~2 s (p90 ~3 s) | ✓ | ✓ |
 
 ## License
 

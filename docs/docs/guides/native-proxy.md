@@ -63,7 +63,12 @@ blindhop-proxy [OPTIONS]
 | `--target` | `wss://sys.turboflakes.io/asset-hub-paseo` | Substrate full node RPC URL |
 | `--privacy-mode` | `full` | Privacy level: `none`, `fast`, `full` |
 | `--exit-address` | (required for fast/full) | Nym address of the exit service |
-| `--nym-gateway` | (auto-select) | Manual Nym gateway selection |
+| `--nym-gateway` | (auto-select) | Reserved: accepted but not yet used (the proxy always auto-selects a gateway) |
+| `--allowed-origin` | (none) | Browser origin allowed to connect (repeatable, e.g. `https://demo.blindhop.wtf`). Required for web apps. |
+
+:::info Browser Origin Security
+Browsers automatically send an `Origin` header during WebSocket handshakes and do not enforce CORS on WebSockets. To prevent arbitrary websites from connecting to your local proxy and switching it to direct mode or querying your IP, `blindhop-proxy` refuses any browser connection whose origin isn't listed in `--allowed-origin`. Non-browser clients (such as smoldot CLI apps) do not send an `Origin` header and are permitted by default.
+:::
 
 ## Privacy Modes
 
@@ -72,24 +77,24 @@ blindhop-proxy [OPTIONS]
 blindhop-proxy --privacy-mode none --target wss://rpc.polkadot.io
 ```
 - Direct WebSocket connection — no Nym, no privacy
-- Lowest latency (0ms overhead)
+- Lowest latency (0ms proxy overhead)
 - Your IP is visible to the full node
 
 ### Fast (2-hop dVPN)
 ```bash
 blindhop-proxy --privacy-mode fast --exit-address <NYM_ADDRESS>
 ```
-- 2-hop Nym dVPN mode
-- IP hidden from full node (~200-500ms overhead)
-- No cover traffic — timing analysis still possible
+- 2-hop Nym dVPN mode: routes directly from entry gateway to exit gateway, skipping intermediate mix nodes
+- Poisson delays and loop cover traffic disabled for lowest mixnet latency (~1.4–1.8 s measured p50)
+- IP hidden from full node; timing analysis still possible
 
 ### Full (5-hop Mixnet)
 ```bash
 blindhop-proxy --privacy-mode full --exit-address <NYM_ADDRESS>
 ```
-- Full 5-hop Nym mixnet with Loopix cover traffic
-- Complete metadata privacy (~1-3s overhead)
-- Strongest protection against traffic analysis
+- Full 5-hop Nym mixnet with Loopix loop cover traffic and Poisson mixing delays
+- Complete metadata privacy (~2.0 s measured p50, ~3.1 s p90)
+- Strongest protection against timing and traffic analysis
 
 ## Connecting smoldot
 
@@ -116,6 +121,11 @@ ws.send(JSON.stringify({
     method: 'blindhop_setPrivacyMode',
     params: ['fast']
 }));
+
+// On success, the proxy replies confirming the active mode:
+// {"jsonrpc":"2.0","id":99,"result":{"mode":"2-hop dVPN — IP Hidden","mode_id":"fast","status":"ok"}}
+// If connecting in the new mode fails, the reply is error -32000 with error.data.mode_id
+// set to the mode actually in effect. An unknown mode name gives error -32602.
 
 // Get current metrics
 ws.send(JSON.stringify({
@@ -179,6 +189,6 @@ launchctl load ~/Library/LaunchAgents/wtf.blindhop.proxy.plist
 | Issue | Fix |
 |-------|-----|
 | `Address already in use` | Another process is on port 9500. Use `--listen 127.0.0.1:9501` |
-| `Nym gateway connection failed` | Check internet connectivity. Try `--nym-gateway` with a specific gateway |
+| `Nym gateway connection failed` | Check internet connectivity and retry; the Nym SDK selects a gateway afresh on each connect |
 | `Exit service unreachable` | Verify the exit service is running and the Nym address is correct |
 | High latency in Full mode | Normal (1-3s). Nym mixing adds deliberate delays for privacy |

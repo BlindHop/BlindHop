@@ -1,10 +1,12 @@
-// BlindHop Demo - Browser-Embedded Nym Client + Native Proxy Fallback
+// BlindHop Demo - Browser-Embedded Nym Client (+ opt-in local proxy)
 //
-// Auto-detects connection mode:
-//   1. Try native blindhop-proxy at ws://localhost:9500
-//   2. If not found, fall back to browser Nym Wasm client
-//
-// In browser mode, the Nym SDK runs directly in a Web Worker — no local setup needed.
+// Connection mode:
+//   - Default: the Nym Wasm client runs in the browser (Web Worker); the page
+//     never contacts localhost.
+//   - Opt-in ("Use my local BlindHop proxy"): connect to blindhop-proxy at
+//     ws://127.0.0.1:9500 (started with --allowed-origin for this site).
+// If the Nym client fails, querying stops: there is no silent fallback to a
+// direct connection.
 
 import { LatencyChart } from './chart.js';
 import { NymBrowserClient } from './nym-client.js';

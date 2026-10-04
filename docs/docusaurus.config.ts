@@ -48,7 +48,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
-          editUrl: 'https://github.com/blindhop/blindhop/tree/main/docs/',
+          editUrl: 'https://github.com/blindhop/blindhop/tree/HEAD/docs/',
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
         },

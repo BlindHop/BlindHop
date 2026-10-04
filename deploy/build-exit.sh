@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MIN_RUST="1.85"  # edition 2024
+MIN_RUST="1.88"  # let-chains in common/src/rpc.rs (nym-sdk itself needs 1.87)
 
 die() { echo "Error: $*" >&2; exit 1; }
 

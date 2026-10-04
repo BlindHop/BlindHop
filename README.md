@@ -23,7 +23,7 @@ BlindHop is a **network-layer privacy system** for Substrate-based light clients
 - **5-hop routing** — strong unlinkability via Sphinx packet format
 - **Loopix cover traffic** — real and dummy packets are indistinguishable
 - **Privacy slider** — users choose between None (direct), Fast (2-hop), Full (5-hop)
-- **Modular exit** — dedicated service provider or Nym SOCKS5 fallback
+- **Hardened exit** — dedicated Nym service provider with a read-only method allowlist, size and concurrency limits, and a stable address
 
 ## Architecture
 
@@ -65,15 +65,17 @@ BlindHop is a **network-layer privacy system** for Substrate-based light clients
 
 ```
 blindhop/
-├── common/      # blindhop-common — shared types, transport traits, config
+├── common/      # blindhop-common — shared types, transport traits, config, wire frame
+│   └── tests/   # Unit + (ignored) live integration tests
 ├── proxy/       # blindhop-proxy — local WS proxy + Nym client
 ├── exit/        # blindhop-exit — Nym service provider + Substrate forwarder
-├── demo/        # Browser demo with privacy slider
+├── demo/        # Browser demo with privacy slider (Vite + Nym Wasm SDK)
+├── deploy/      # Exit server deployment: build/install scripts, hardened systemd unit
 ├── scripts/     # run_exit.sh, run_proxy.sh, run_demo.sh, benchmark.sh
-├── archive/     # Legacy Sphinx relay code (pre-Nym)
-│   ├── lib/     # Original blindhop-lib (Sphinx cryptography)
-│   └── relay/   # Original blindhop-relay (self-hosted nodes)
-└── tests/       # Integration tests
+├── docs/        # Docusaurus site (wiki.blindhop.wtf)
+└── archive/     # Legacy Sphinx relay code (pre-Nym)
+    ├── lib/     # Original blindhop-lib (Sphinx cryptography)
+    └── relay/   # Original blindhop-relay (self-hosted nodes)
 ```
 
 ## Quick Start
@@ -83,11 +85,11 @@ blindhop/
 Open the hosted demo — no Rust, no CLI, no local setup:
 
 1. Visit [`https://demo.blindhop.wtf`](https://demo.blindhop.wtf)
-2. Paste your exit service's Nym address (or use the default)
+2. Keep the pre-filled exit address (the public BlindHop exit) or paste your own
 3. Click **Start Querying**
-4. Adjust the privacy slider
+4. Adjust the privacy slider (None / Full; Fast needs the native proxy)
 
-The browser demo uses the [Nym Wasm SDK](https://www.npmjs.com/package/@nymproject/sdk-full-fat) to run the mixnet client directly in your browser.
+The browser demo uses the [Nym Wasm SDK](https://www.npmjs.com/package/@nymproject/sdk-full-fat) (pinned to 1.4.1) to run the mixnet client directly in your browser. By default it never contacts `localhost` and never sends queries from your own IP: the "Compare with direct" latency comparison is opt-in, and if the Nym client fails to start the demo stops instead of falling back to a direct connection.
 
 ### Option B: Native Proxy (Full Features)
 
@@ -95,7 +97,7 @@ For production use or when you need Fast (2-hop) mode:
 
 #### Prerequisites
 
-- **Rust** (stable, edition 2024)
+- **Rust** ≥ 1.88 (stable, edition 2024)
 - A running Substrate full node or public RPC endpoint
 
 #### Build
@@ -117,6 +119,10 @@ cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-pa
 This prints the exit's Nym address and saves it to `.exit_nym_address`.
 
 The exit's Nym keys live in `.blindhop-exit/` (override with `--data-dir`). Keep that directory across restarts and redeploys, and back it up: it is what keeps the exit's address stable. Deleting it gives the exit a new address, and every proxy and demo user must be reconfigured.
+
+Use `--gateway <IDENTITY_KEY>` (or `BLINDHOP_EXIT_GATEWAY`) to pin the exit to a specific Nym gateway. This changes only the part of the address after `@`.
+
+For a production server (systemd, hardening, key backups, upgrades), see [`deploy/README.md`](deploy/README.md).
 
 #### Run the Proxy
 
@@ -159,20 +165,22 @@ Integrate BlindHop into your smoldot-based dApp:
 
 - **Native apps**: Point smoldot at `ws://127.0.0.1:9500` while running `blindhop-proxy`
 - **Browser apps**: Use the Nym Wasm SDK (see [integration guide](https://wiki.blindhop.wtf/docs/guides/smoldot-integration))
-- **Hybrid**: Auto-detect native proxy, fall back to browser Nym client
+- **Hybrid**: Let the user opt in to a local proxy (started with `--allowed-origin <your-site>`), otherwise use the browser Nym client
 
 See the [Guides](https://wiki.blindhop.wtf/docs/guides/native-proxy) for detailed setup.
 
 
 ## Privacy Modes
 
-| Mode | Hops | Cover Traffic | Latency Overhead | IP Hidden | Metadata Private |
+| Mode | Path | Cover Traffic | Round-trip (p50, measured) | IP Hidden | Metadata Private |
 |------|------|--------------|------------------|-----------|-----------------|
-| **None** | 0 | ✗ | 0ms | ✗ | ✗ |
-| **Fast** | 2 | ✗ | ~200-500ms | ✓ | ✗ |
-| **Full** | 5 | ✓ | ~1-3s | ✓ | ✓ |
+| **None** | direct | ✗ | RPC node latency | ✗ | ✗ |
+| **Fast** | entry gateway → exit gateway (no mix nodes) | ✗ | ~1.4–1.8 s | ✓ | ✗ |
+| **Full** | gateway → 3 mix layers → gateway | ✓ | ~2 s (p90 ~3 s) | ✓ | ✓ |
 
-Users can switch modes at runtime via the demo UI's privacy slider, or by sending a `blindhop_setPrivacyMode` JSON-RPC message to the proxy.
+Latencies were measured on Nym mainnet for small requests. Large replies take longer: `state_getMetadata` (~1.2 MB) takes ~9–11 s in Full mode.
+
+Users can switch modes at runtime via the demo UI's privacy slider, or by sending a `blindhop_setPrivacyMode` JSON-RPC message to the proxy. Switching between Nym modes reconnects with a new Nym client. The reply reports the mode actually in effect (on failure, a JSON-RPC error whose `data.mode_id` is the current mode).
 
 ## Key Traits
 
@@ -181,22 +189,26 @@ Users can switch modes at runtime via the demo UI's privacy slider, or by sendin
 ```rust
 #[async_trait]
 pub trait MixnetTransport: Send + Sync {
-    async fn send(&self, data: &[u8]) -> Result<()>;
-    async fn recv(&self) -> Result<Vec<u8>>;
+    /// Send a request and wait for *its* reply (safe to call concurrently;
+    /// replies are matched by correlation ID).
+    async fn request(&self, data: &[u8]) -> Result<Vec<u8>>;
     fn privacy_info(&self) -> PrivacyInfo;
     fn metrics(&self) -> TransportMetrics;
-    async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()>;
     fn is_connected(&self) -> bool;
     async fn disconnect(&self) -> Result<()>;
 }
 ```
+
+A transport's privacy mode is fixed for its lifetime; switching modes creates a new transport.
 
 ### `ExitBackend` (in `blindhop-exit`)
 
 ```rust
 #[async_trait]
 pub trait ExitBackend: Send + Sync {
-    async fn forward_rpc(&self, request: &[u8]) -> Result<Vec<u8>>;
+    /// `id` is the request's validated JSON-RPC id, used to match the
+    /// response on a pooled upstream connection.
+    async fn forward_rpc(&self, request: &[u8], id: &serde_json::Value) -> Result<Vec<u8>>;
     fn backend_type(&self) -> &str;
 }
 ```
@@ -207,8 +219,13 @@ pub trait ExitBackend: Send + Sync {
 # Unit tests (all crates, no network required)
 cargo test --workspace
 
-# Run clippy
-cargo clippy --workspace -- -D warnings
+# Lint (including tests and benches) and format check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+
+# Dependency audit (accepted advisories are listed in .cargo/audit.toml)
+cargo audit
+(cd demo && npm audit --package-lock-only --audit-level=moderate)
 ```
 
 ## Key Dependencies
@@ -221,6 +238,8 @@ cargo clippy --workspace -- -D warnings
 | `async-trait` | 0.1 | Async trait support |
 | `clap` | 4.x | CLI argument parsing |
 | `serde` | 1.x | Serialization |
+| `flate2` | 1.1 | Deflate compression of large mixnet replies |
+| `@nymproject/sdk-full-fat` (npm) | 1.4.1 | Nym Wasm client for the browser demo |
 
 ## License
 

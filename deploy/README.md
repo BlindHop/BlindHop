@@ -10,7 +10,7 @@ Tested on Ubuntu 24.04 (x86_64) with systemd 255. Oracle's Ampere VMs are ARM (`
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libssl-dev git curl
 
-# Rust (official installer; the build needs Rust >= 1.85)
+# Rust (official installer; the build needs Rust >= 1.88)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 source "$HOME/.cargo/env"
 
@@ -79,7 +79,7 @@ Keep logging at `info` (the default in the unit); debug logs record request size
 
 ### Limits
 
-The unit caps the exit at `MemoryMax=320M` and one CPU core (`CPUQuota=100%`), with `CPUWeight=50` so other services on the server get twice its CPU share when they compete. The exit itself handles at most 16 requests at once (8 per client) and answers "busy" beyond that, forwards only an allowlist of read-only methods plus `author_submitExtrinsic`, and caps responses at 4 MiB. In load testing, peak memory was ~100 MB; the worst case at these limits is estimated at ~240 MB.
+The unit caps the exit at `MemoryMax=320M` and one CPU core (`CPUQuota=100%`), with `CPUWeight=50` so other services on the server get twice its CPU share when they compete. The exit itself handles at most 16 requests at once (8 per client); a request that finds no free slot waits up to 5 s for one (at most 32 waiting) before being answered "busy" (`-32005`). It forwards only an allowlist of read-only methods plus `author_submitExtrinsic` (no batches or subscriptions), and caps requests at 1 MiB and responses at 4 MiB. In load testing, peak memory was ~100 MB; the worst case at these limits is estimated at ~240 MB.
 
 To change a unit setting without editing the file: `sudo systemctl edit blindhop-exit`, then add e.g.
 
@@ -87,6 +87,10 @@ To change a unit setting without editing the file: `sudo systemctl edit blindhop
 [Service]
 MemoryMax=512M
 ```
+
+### Self-healing
+
+The exit exits with an error (so systemd restarts it) if its Nym client shuts down unexpectedly, or if a small probe it sends itself through the mixnet every 60 s hasn't come back for 180 s. The second case covers a gateway that silently stops delivering messages. If restarts repeat, check `journalctl -u blindhop-exit` for gateway errors and consider `--gateway` to move to another gateway.
 
 ### Hardening
 

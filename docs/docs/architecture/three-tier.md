@@ -24,45 +24,53 @@ BlindHop uses `nym-sdk` (v1.21.6) from crates.io for all mixnet operations.
 ### Client Connection (Proxy)
 
 ```rust
-use nym_sdk::mixnet::{MixnetClient, MixnetMessageSender, Recipient};
+use nym_sdk::mixnet::{MixnetClientBuilder, MixnetMessageSender, Recipient};
 
-// Connect to the Nym mixnet
-let mut client = MixnetClient::connect_new().await?;
-let our_address = client.nym_address();
+// Ephemeral client configured per privacy mode (Fast: mix hops & cover traffic disabled)
+let mut config = nym_sdk::DebugConfig::default();
+if mode == PrivacyMode::Fast {
+    config.traffic.disable_mix_hops = true;
+    config.cover_traffic.disable_loop_cover_traffic_stream = true;
+    config.traffic.disable_main_poisson_packet_distribution = true;
+}
 
-// Send a message to the exit service
-let recipient = Recipient::try_from_base58_string(&exit_address)?;
-client.send_plain_message(recipient, message_bytes).await?;
+let client = MixnetClientBuilder::new_ephemeral()
+    .debug_config(config)
+    .build()?
+    .connect_to_mixnet()
+    .await?;
 
-// Receive reply (via SURBs)
-let messages = client.wait_for_messages().await;
+// Send request encoded in binary frame [type | correlation_id | payload]
+// Replies are routed to individual callers by correlation ID via a background receiver task.
+let reply = transport.request(&json_rpc_bytes).await?;
 ```
 
 ### Service Provider (Exit)
 
 ```rust
-use nym_sdk::mixnet::{MixnetClient, MixnetMessageSender};
+use nym_sdk::mixnet::{MixnetClientBuilder, StoragePaths};
 
-// Connect as a Service Provider
-let mut client = MixnetClient::connect_new().await?;
-let our_address = client.nym_address();
-println!("Exit service Nym address: {}", our_address);
+// Exit connects with persistent on-disk keys to keep its Nym address stable across restarts
+let storage_paths = StoragePaths::new_from_dir(&data_dir)?;
+let mut config = nym_sdk::DebugConfig::default();
+config.traffic.disable_main_poisson_packet_distribution = true; // send replies immediately
+config.reply_surbs.maximum_reply_surb_request_size = 500;       // large replies need many SURBs
 
-// Process incoming messages
-loop {
-    let messages = client.wait_for_messages().await
-        .ok_or("channel closed")?;
-
-    for msg in messages {
-        let payload = parse_mixnet_message(&msg.message);
-        let response = forward_to_substrate(&payload).await;
-
-        // Reply via SURB (anonymous)
-        if let Some(tag) = msg.sender_tag {
-            client.send_reply(tag, response).await?;
-        }
-    }
+let mut builder = MixnetClientBuilder::new_with_default_storage(storage_paths)
+    .await?
+    .debug_config(config);
+if let Some(gateway) = gateway {
+    builder = builder.request_gateway(gateway); // --gateway
 }
+let mut client = builder.build()?.connect_to_mixnet().await?;
+
+println!("Exit service Nym address: {}", client.nym_address());
+
+// Process incoming messages concurrently on separate tasks:
+// - Check method against allowlist and payload limits (≤ 1 MiB)
+// - Acquire rate-limiting permit (max 16 global, 8 per client, 5s queue)
+// - Forward to full node via pooled WebSocket connection
+// - Compress response (raw deflate) if requested, and send via SURB
 ```
 
 ## Sphinx Packet Format

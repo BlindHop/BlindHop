@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,13 +10,13 @@ env:
 jobs:
   check:
     name: Build & Test
+    # Triggers only if the push or PR target is the repository's default branch
+    if: github.ref_name == github.event.repository.default_branch || github.base_ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache cargo
         uses: actions/cache@v6
         with:
@@ -29,46 +27,39 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Build
         run: cargo build --workspace
-
       - name: Test
         run: cargo test --workspace
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   format:
     name: Formatting
+    if: github.ref_name == github.event.repository.default_branch || github.base_ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
   audit:
     name: Dependency audit
+    if: github.ref_name == github.event.repository.default_branch || github.base_ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
-
       # Known, reviewed exceptions live in .cargo/audit.toml; anything else fails.
       - name: Audit Rust dependencies
         run: cargo audit
-
       - name: Audit demo dependencies
         working-directory: demo
         run: npm audit --package-lock-only --audit-level=moderate

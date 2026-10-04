@@ -54,15 +54,17 @@ The **User Layer** runs on the user's machine (browser or CLI). It is responsibl
 ```rust
 #[async_trait]
 pub trait MixnetTransport: Send + Sync {
-    async fn send(&self, data: &[u8]) -> Result<()>;
-    async fn recv(&self) -> Result<Vec<u8>>;
+    /// Send a request through the mixnet and wait for the reply to that
+    /// specific request (matched by correlation ID).
+    async fn request(&self, data: &[u8]) -> Result<Vec<u8>>;
     fn privacy_info(&self) -> PrivacyInfo;
     fn metrics(&self) -> TransportMetrics;
-    async fn set_privacy_mode(&self, mode: PrivacyMode) -> Result<()>;
     fn is_connected(&self) -> bool;
     async fn disconnect(&self) -> Result<()>;
 }
 ```
+
+A transport's mode is fixed at connect time; switching privacy modes reconnects with a newly configured transport.
 
 ## Nym Mixnet Layer
 
@@ -71,8 +73,8 @@ The **Nym Mixnet** is the core privacy infrastructure — a production network o
 | Feature | Details |
 |---|---|
 | Packet format | Sphinx (fixed-size, indistinguishable from cover traffic) |
-| Routing | 5-hop stratified cascade (Full mode) or 2-hop (Fast mode) |
-| Cover traffic | Loopix protocol — Poisson-distributed dummy packets |
+| Routing | 5-hop stratified cascade (Full mode) or 2-hop (Fast mode: gateway → gateway) |
+| Cover traffic | Loopix protocol — Poisson-distributed dummy packets (Full mode) |
 | Reply mechanism | SURBs (Single-Use Reply Blocks) for anonymous responses |
 | Network size | 500+ mix nodes across 3 layers + gateways |
 | Authentication | zk-nyms (Coconut credentials) for bandwidth allocation |
@@ -81,21 +83,22 @@ The **Nym Mixnet** is the core privacy infrastructure — a production network o
 
 ## Exit Layer
 
-The **Exit Layer** runs as a Nym Service Provider on a server with access to Substrate full nodes.
+The **Exit Layer** runs as a hardened Nym Service Provider on a server with access to Substrate full nodes.
 
 | Responsibility | Implementation |
 |---|---|
-| Receive mixnet traffic | Nym SP message loop |
-| Parse MixnetMessage envelopes | Extract JSON-RPC payload |
-| Forward to Substrate | WebSocket client to full node |
-| Return responses | SURB reply through the mixnet |
+| Receive mixnet traffic | Nym SP message loop with self-probe watchdog |
+| Policy & rate limits | Allowlist of read-only methods + `author_submitExtrinsic`; 16 concurrent requests (8/client) with 5s slot queue |
+| Parse MixnetMessage frames | Binary frame `[type u8][correlation_id u64 BE][payload]`, optional raw-deflate compression |
+| Forward to Substrate | Pooled WebSocket connections (`UpstreamPool`) with request ID matching |
+| Return responses | SURB reply through the mixnet with immediate delivery |
 
 **Key trait**: `ExitBackend` — pluggable RPC forwarding backend.
 
 ```rust
 #[async_trait]
 pub trait ExitBackend: Send + Sync {
-    async fn forward_rpc(&self, request: &[u8]) -> Result<Vec<u8>>;
+    async fn forward_rpc(&self, request: &[u8], id: &serde_json::Value) -> Result<Vec<u8>>;
     fn backend_type(&self) -> &str;
 }
 ```

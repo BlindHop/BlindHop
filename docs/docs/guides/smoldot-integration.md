@@ -106,7 +106,7 @@ await blindhop.disconnect();
 ```
 
 :::note
-The `@blindhop/browser` npm package is planned for **Phase 2**. The current MVP demo implements this pattern directly. See the [demo source code](https://github.com/blindhop/blindhop/tree/main/demo) for the working implementation.
+The `@blindhop/browser` npm package is planned for **Phase 2**. The current MVP demo implements this pattern directly. See the [demo source code](https://github.com/blindhop/blindhop/tree/HEAD/demo) for the working implementation.
 :::
 
 ### Adding a Privacy Toggle to Your UI
@@ -142,30 +142,33 @@ function PrivacyToggle({ blindhop }) {
 }
 ```
 
-## Option 3: Hybrid (Auto-Detect)
+## Option 3: Hybrid (Opt-in Local Proxy)
 
-The BlindHop demo uses a hybrid approach — automatically detecting whether a native proxy is running and falling back to the browser Nym client:
+The BlindHop demo uses the browser Nym client by default and connects to a local proxy only when the user explicitly opts in:
 
 ```javascript
-async function initPrivacy() {
-    // Try native proxy first (better performance, more modes)
-    try {
+async function initPrivacy({ useLocalProxy }) {
+    if (useLocalProxy) {
+        // Only on explicit opt-in. The proxy must be started with
+        // --allowed-origin <your-site>, or it refuses the connection.
         const ws = new WebSocket('ws://127.0.0.1:9500');
-        await waitForOpen(ws, 2000);
+        await waitForOpen(ws, 2000); // on failure, report it; don't silently switch
         return { mode: 'native', transport: ws };
-    } catch {
-        // Fall back to browser Nym client
-        const { NymBrowserClient } = await import('./nym-client.js');
-        const nym = new NymBrowserClient();
-        await nym.connect(EXIT_NYM_ADDRESS);
-        return { mode: 'browser', transport: nym };
     }
+    const { NymBrowserClient } = await import('./nym-client.js');
+    const nym = new NymBrowserClient();
+    await nym.connect(EXIT_NYM_ADDRESS); // on failure, stop; never fall back to direct
+    return { mode: 'browser', transport: nym };
 }
 ```
 
+:::warning Don't auto-probe localhost
+Silently probing `ws://127.0.0.1:9500` from a public page lets any site detect a running proxy, and browsers may show a local-network permission prompt. Likewise, never fall back to a direct RPC connection when the Nym client fails: that exposes the user's IP without their consent.
+:::
+
 This gives users the best of both worlds:
 - **Power users** who run the native proxy get full 3-mode support
-- **Casual users** get automatic browser-based privacy with no setup
+- **Casual users** get browser-based privacy (None/Full) with no setup
 
 ## What Gets Protected
 
@@ -179,9 +182,9 @@ This gives users the best of both worlds:
 
 ## Limitations
 
-- **Latency**: Full mode adds 1-3 seconds per request (Nym mixing delay)
+- **Latency**: Full mode round-trips take ~2 s (p50; p90 ~3 s), Fast mode ~1.4–1.8 s
 - **Throughput**: Not suitable for high-frequency trading or sub-second queries
-- **Subscriptions**: WebSocket subscriptions work but with higher latency on updates
+- **Subscriptions**: Not supported — the exit forwards single request/response calls only and refuses subscription methods; poll instead (e.g. `chain_getHeader`)
 - **Exit trust**: The exit service sees your queries (but not your IP). Run your own exit for maximum privacy
 
 ## Deploying Your Own Exit Service

@@ -18,6 +18,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Defaults
 TARGET_RPC="wss://sys.turboflakes.io/asset-hub-paseo"
+DATA_DIR=".blindhop-exit"
+GATEWAY=""
 BUILD_MODE="debug"
 LOG_LEVEL="${RUST_LOG:-info}"
 
@@ -25,16 +27,20 @@ LOG_LEVEL="${RUST_LOG:-info}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)     TARGET_RPC="$2"; shift 2 ;;
+        --data-dir)   DATA_DIR="$2"; shift 2 ;;
+        --gateway)    GATEWAY="$2"; shift 2 ;;
         --release)    BUILD_MODE="release"; shift ;;
         --log)        LOG_LEVEL="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --target <URL>   Substrate RPC endpoint (default: $TARGET_RPC)"
-            echo "  --release        Build in release mode"
-            echo "  --log <LEVEL>    Log level: trace|debug|info|warn|error (default: info)"
-            echo "  -h, --help       Show this help"
+            echo "  --target <URL>     Substrate RPC endpoint (default: $TARGET_RPC)"
+            echo "  --data-dir <DIR>   State and keys directory (default: $DATA_DIR)"
+            echo "  --gateway <KEY>    Nym gateway identity key (optional)"
+            echo "  --release          Build in release mode"
+            echo "  --log <LEVEL>      Log level: trace|debug|info|warn|error (default: info)"
+            echo "  -h, --help         Show this help"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -67,4 +73,13 @@ echo "→ Starting exit service..."
 echo "  (Nym address will be printed below and saved to .exit_nym_address)"
 echo ""
 
-RUST_LOG="$LOG_LEVEL" exec "$BINARY" --target-rpc "$TARGET_RPC"
+EXIT_ARGS=(
+    --target-rpc "$TARGET_RPC"
+    --data-dir "$DATA_DIR"
+)
+
+if [[ -n "$GATEWAY" ]]; then
+    EXIT_ARGS+=(--gateway "$GATEWAY")
+fi
+
+RUST_LOG="$LOG_LEVEL" exec "$BINARY" "${EXIT_ARGS[@]}"

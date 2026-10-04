@@ -10,37 +10,45 @@ title: Testing & Verification
 ### Unit Tests
 
 ```bash
-# Shared types, config, metrics, RPC message round-trips (14 tests)
-cargo test -p blindhop-common
-
-# All workspace crates
+# All workspace crates: 63 tests (51 unit + 12 in common/tests/proxy_unit.rs);
+# 7 live tests are #[ignore]d and skipped
 cargo test --workspace
+
+# Specific crate unit tests
+cargo test -p blindhop-common
+cargo test -p blindhop-proxy
+cargo test -p blindhop-exit
 ```
 
 ### Current Test Coverage
 
 | Crate | Tests | Coverage |
 |---|---|---|
-| `blindhop-common` | 14 | Config defaults, privacy mode serde, metrics percentiles, JSON-RPC round-trips, MixnetMessage encode/decode |
-| `blindhop-proxy` | — | Compilation verified, integration tests planned |
-| `blindhop-exit` | — | Compilation verified, integration tests planned |
+| `blindhop-common` | 23 unit + 12 integration | Config defaults, privacy mode serde, metrics percentiles, JSON-RPC round-trips, binary frame encode/decode, deflate raw compression, decompression bounds |
+| `blindhop-proxy` | 11 unit | Replies routed by correlation ID, Fast/Full hop/cover-traffic/Poisson settings, WebSocket origin filtering, mode-switch replies and errors |
+| `blindhop-exit` | 17 unit | Method allowlist filtering, payload size caps, concurrency limiting (permits & queueing), upstream connection pool & mock node tests |
 
-### Integration Tests (Planned)
+### Integration Tests
+
+`common/tests/proxy_unit.rs` (12 tests) is offline and runs with `cargo test --workspace`. The two live suites are `#[ignore]`d and only run on request:
 
 ```bash
-# Requires Nym mainnet connectivity
-BLINDHOP_NYM_INTEGRATION=1 cargo test --workspace -- --ignored
+# Live Nym tests (also behind the nym-live feature)
+BLINDHOP_EXIT_NYM_ADDR=<address> cargo test -p blindhop-common --test nym_integration --features nym-live -- --ignored
+
+# End-to-end tests against a running proxy
+BLINDHOP_PROXY_WS=ws://127.0.0.1:9500 cargo test -p blindhop-common --test e2e_chain -- --ignored
 ```
 
-Integration test plans:
+| Suite | Status | Coverage |
+|---|---|---|
+| `proxy_unit` | ✅ Implemented | Config defaults, privacy mode properties/serde, JSON-RPC and frame round-trips, metrics snapshot/eviction/reset, control message parsing |
+| `nym_integration` | 🚧 Stub (TODO) | Planned: live Nym round-trip, mixnet to Substrate, live mode switching |
+| `e2e_chain` | 🚧 Stub (TODO) | Planned: client → proxy → Nym → exit → full node → SURB reply |
 
-| Test | Coverage |
-|---|---|
-| `proxy_direct_mode` | Proxy in None mode: WS pass-through to Substrate |
-| `proxy_nym_roundtrip` | Proxy → Nym → Exit → Substrate → SURB reply |
-| `mode_switching` | Runtime transition between None/Fast/Full |
-| `exit_rpc_forwarding` | Exit receives MixnetMessage, forwards JSON-RPC, returns response |
-| `metrics_collection` | Latency and message count tracking across modes |
+:::caution
+The live suites are placeholders: their test bodies only print a TODO and assert nothing, so they pass without testing anything. Until they are implemented, the live path is verified manually (below).
+:::
 
 ## Manual Verification
 
@@ -50,7 +58,7 @@ Integration test plans:
    ```bash
    cargo run -p blindhop-exit -- --target-rpc wss://sys.turboflakes.io/asset-hub-paseo
    ```
-   Verify: Nym address printed to stdout.
+   Verify: Nym address printed to stdout and saved to `.exit_nym_address`.
 
 2. **Start the proxy:**
    ```bash
@@ -79,10 +87,10 @@ Open `http://localhost:8080` and verify:
 |---|---|---|
 | 1 | Privacy slider at "Full" | Green indicator, "5-hop Mixnet — Metadata Private" |
 | 2 | Click "Start Querying" | Status badge turns green "Connected" |
-| 3 | Observe latency metrics | p50/p95 values populated |
+| 3 | Observe latency metrics | p50/p95 values populated (~2.0s p50) |
 | 4 | Observe chart | Green line showing latency points |
 | 5 | Slide to "None" | Red indicator, direct connection, lower latency |
-| 6 | Slide to "Fast" | Yellow indicator, 2-hop mode |
+| 6 | Slide to "Fast" | Yellow indicator, 2-hop mode (~1.4–1.8s) |
 | 7 | Check overhead bar | Shows latency difference vs direct |
 | 8 | Check chain data | Block number incrementing |
 
@@ -92,13 +100,13 @@ Open `http://localhost:8080` and verify:
 ./scripts/benchmark.sh
 ```
 
-Expected latency ranges:
+Measured latency ranges (Nym mainnet):
 
-| Mode | Expected Round-Trip |
+| Mode | Measured Round-Trip (p50) |
 |---|---|
-| None (direct) | 50-200 ms |
-| Fast (2-hop) | 200-700 ms |
-| Full (5-hop) | 1-4 s |
+| None (direct) | 50-200 ms (direct RPC) |
+| Fast (2-hop) | ~1.4–1.8 s |
+| Full (5-hop) | ~2.0 s (p90 ~3.1 s) |
 
 ## CI/CD
 
@@ -106,24 +114,30 @@ Expected latency ranges:
 
 - `cargo build --workspace`
 - `cargo test --workspace`
-- `cargo clippy --workspace -- -D warnings`
-- `cargo fmt --workspace -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo fmt --all -- --check`
+- `cargo audit` (Rust dependency security advisories)
+- `npm audit --package-lock-only --audit-level=moderate` (demo dependencies)
 
 ### Nightly (`.github/workflows/nightly.yml`)
 
 - Full workspace release build
-- Unit tests
-- Nym integration tests (with `--ignored` flag)
+- `cargo test --workspace` (same tests as CI)
+- `cargo test --workspace -- --ignored`: currently runs only the `e2e_chain` stubs. `nym_integration` is compiled out because the job doesn't enable `nym-live`, and no exit or proxy is started, so this step doesn't exercise the mixnet yet.
+- Dependency audit (`cargo audit`, `npm audit`)
 
 ## Code Quality
 
 ```bash
-# Lint check
-cargo clippy --workspace -- -D warnings
+# Lint check (workspace and all test/bench targets)
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Format check
-cargo fmt --workspace -- --check
+cargo fmt --all -- --check
 
 # Fix formatting
-cargo fmt --workspace
+cargo fmt --all
+
+# Dependency security audit
+cargo audit
 ```

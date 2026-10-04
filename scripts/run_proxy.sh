@@ -23,6 +23,7 @@ MODE="full"
 EXIT_ADDRESS=""
 BUILD_MODE="debug"
 LOG_LEVEL="${RUST_LOG:-info}"
+ALLOWED_ORIGINS=()
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         --target)         TARGET_RPC="$2"; shift 2 ;;
         --mode)           MODE="$2"; shift 2 ;;
         --exit-address)   EXIT_ADDRESS="$2"; shift 2 ;;
+        --allowed-origin) ALLOWED_ORIGINS+=("$2"); shift 2 ;;
         --release)        BUILD_MODE="release"; shift ;;
         --log)            LOG_LEVEL="$2"; shift 2 ;;
         -h|--help)
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --target <URL>           Substrate RPC endpoint (default: $TARGET_RPC)"
             echo "  --mode <MODE>            Privacy mode: none|fast|full (default: full)"
             echo "  --exit-address <ADDR>    Nym address of exit service (required for fast/full)"
+            echo "  --allowed-origin <URL>   Allowed browser origin, e.g. https://demo.blindhop.wtf (repeatable)"
             echo "  --release                Build in release mode"
             echo "  --log <LEVEL>            Log level: trace|debug|info|warn|error (default: info)"
             echo "  -h, --help               Show this help"
@@ -103,6 +106,11 @@ PROXY_ARGS=(
 if [[ -n "$EXIT_ADDRESS" ]]; then
     PROXY_ARGS+=(--exit-address "$EXIT_ADDRESS")
 fi
+
+# ${arr[@]+...} keeps an empty array safe under `set -u` on bash 3.2 (macOS).
+for origin in ${ALLOWED_ORIGINS[@]+"${ALLOWED_ORIGINS[@]}"}; do
+    PROXY_ARGS+=(--allowed-origin "$origin")
+done
 
 echo ""
 echo "→ Starting proxy at ws://$LISTEN"

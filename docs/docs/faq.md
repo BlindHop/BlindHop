@@ -35,18 +35,20 @@ In Full mode, your traffic mixes with all other Nym users (thousands). This is f
 
 ### What are the three privacy modes?
 - **None**: Direct connection to the full node (no privacy, lowest latency)
-- **Fast**: 2-hop Nym path (IP hidden, ~200-500ms overhead)
-- **Full**: 5-hop Nym path with cover traffic (metadata private, ~1-3s overhead)
+- **Fast**: 2-hop Nym path between gateways, skipping mix nodes (IP hidden, ~1.4–1.8 s measured round-trip)
+- **Full**: 5-hop Nym path with Loopix cover traffic (metadata private, ~2.0 s round-trip p50, ~3.1 s p90)
 
 ## Performance
 
 ### How much latency does BlindHop add?
-- **None mode**: ~0ms (direct connection)
-- **Fast mode**: ~200-500ms round-trip overhead
-- **Full mode**: ~1-3s round-trip overhead (includes Poisson mixing delays)
+- **None mode**: ~0ms proxy overhead (direct RPC connection)
+- **Fast mode**: ~1.4–1.8 s round-trip (bypasses 3 mix layers and disables cover traffic)
+- **Full mode**: ~2.0 s round-trip (p90 ~3.1 s, includes Loopix cover traffic and Poisson mixing delays)
+
+Large chain payloads like `state_getMetadata` (~1.2 MB) return in ~9–11 s in Full mode thanks to binary wire framing and raw deflate compression.
 
 ### Can I switch modes at runtime?
-Yes. Send a `blindhop_setPrivacyMode` JSON-RPC message to the proxy, or use the privacy slider in the demo UI.
+Yes. Send a `blindhop_setPrivacyMode` JSON-RPC message to the proxy, or use the privacy slider in the demo UI. The proxy reconnects with a fresh transport and confirms the mode actually active.
 
 ## Operations
 
@@ -54,13 +56,13 @@ Yes. Send a `blindhop_setPrivacyMode` JSON-RPC message to the proxy, or use the 
 ```bash
 cargo run -p blindhop-exit -- --target-rpc wss://your-substrate-node.example.com
 ```
-The exit service connects to the Nym mixnet as a Service Provider and prints its Nym address.
+The exit service stores its Nym keys in `.blindhop-exit/` (so its Nym address remains stable across restarts) and prints its address to stdout and `.exit_nym_address`. For production server setups, automated systemd scripts with resource caps and sandboxing are provided in `deploy/`.
 
 ### Do I need to run my own exit service?
-For the MVP, yes. In the future, BlindHop will support community-operated exit services and Nym's built-in SOCKS5 proxy as a fallback.
+No. The demo comes pre-filled with the public BlindHop exit, and the proxy can use it too (`--exit-address`). Running your own exit means you don't have to trust that operator's node choice or uptime. A registry of community-operated exits is planned.
 
 ### What are the bandwidth requirements?
-The exit service handles JSON-RPC traffic (typically < 1 KB per request/response). Bandwidth is modest — similar to running a WebSocket RPC proxy.
+The exit service handles standard JSON-RPC queries. Under load, it caps in-flight requests to 16 concurrent (8 per client), limits responses to 4 MiB, and sends replies immediately to prevent packet queueing. Resource usage is modest: in load testing (40 concurrent `state_getMetadata` requests) memory peaked at ~100 MB, and the provided systemd unit caps the exit at 320 MB and one CPU core.
 
 ### Can I use BlindHop without the Nym mixnet?
 Yes, in **None mode**. The proxy forwards traffic directly without using Nym. This is useful for development and when privacy is not required.
