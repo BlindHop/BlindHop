@@ -18,7 +18,7 @@ const CONFIG = {
     directTarget: 'wss://sys.turboflakes.io/asset-hub-paseo',
     queryInterval: 5000,
     proxyDetectTimeout: 2000,
-    defaultExitAddress: 'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@Cxw5sHpFcn45k3Z2oEgBdv8EjNNhxDknTaXBNrne3SFZ', // Deployed exit service node address
+    defaultExitAddress: 'DQ4uyTm1HyWmagAWtWcp3dzRvy7L6tjTgLECg4NiuEHN.HoGQui9XA7x6bFDTpifUDTvniWk3VNwCAeBQg1KCymyu@B6docD8mkjfBWh9vuYw63BbzDfgEzCxARokK4jWfqN3K', // Deployed exit service node address
     // Earlier defaults. A saved address equal to one of these was the default
     // at the time, not the user's own exit, so it's replaced by the current one.
     retiredExitAddresses: [
